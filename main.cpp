@@ -1,4 +1,4 @@
-﻿
+
 
 
 #include <glad/glad.h>
@@ -19,8 +19,8 @@
 #include <direct.h>
 
 // window settings
-const unsigned int SCR_WIDTH = 1200;
-const unsigned int SCR_HEIGHT = 800;
+const unsigned int SCR_WIDTH = 1900;
+const unsigned int SCR_HEIGHT =950;
 
 // cameras for 4 viewports
 Camera mainCamera(glm::vec3(0.0f, 5.0f, 15.0f));
@@ -35,6 +35,9 @@ bool firstMouse = true;
 // timing
 float deltaTime = 0.0f;
 float lastFrame = 0.0f;
+
+// Conveyor belt box speed (units/sec) - controllable via + / - keys
+float conveyorSpeed = 3.0f;
 
 // Toggles state
 bool dirLightOn = true;
@@ -66,47 +69,83 @@ float bindRotAngle = 0.0f;
 float armReachAngle = -30.0f;
 float gripperSpread = 0.3f; // gripper finger spread (0.1=closed, 0.7=open)
 
-struct ConveyorLine {
+float doorYOffset = 0.0f;
+bool doorOpen = false;
+bool keyO_pressed = false;
+
+enum SegmentType { STRAIGHT, CURVE };
+struct PathSegment {
+    SegmentType type;
+    float length;
     glm::vec3 start;
     glm::vec3 end;
-    bool isHorizontal;
+    glm::vec3 center;
+    float radius;
+    float startAngle; // in radians
+    float sweepAngle; // in radians
 };
-std::vector<ConveyorLine> lines = {
-    // Horizontal lines (along X axis) — LOWER level y=0.8
-    {{-44, 0.8f, -20}, {44, 0.8f, -20}, true},
-    {{-44, 0.8f, -10}, {44, 0.8f, -10}, true},
-    {{-44, 0.8f,   0}, {44, 0.8f,   0}, true},
-    {{-44, 0.8f,  10}, {44, 0.8f,  10}, true},
-    {{-44, 0.8f,  20}, {44, 0.8f,  20}, true},
-    // Vertical lines (along Z axis) — UPPER level y=4.5 to pass clearly OVER horizontal tunnel chambers
-    {{-20, 4.5f, -44}, {-20, 4.5f, 44}, false},
-    {{-10, 4.5f, -44}, {-10, 4.5f, 44}, false},
-    {{  0, 4.5f, -44}, {  0, 4.5f, 44}, false},
-    {{ 10, 4.5f, -44}, { 10, 4.5f, 44}, false},
-    {{ 20, 4.5f, -44}, { 20, 4.5f, 44}, false}
-};
+std::vector<PathSegment> globalPaths[5];
+
+float getPathTotalLength(int pathIndex) {
+    if (pathIndex < 0 || pathIndex >= 5) return 0;
+    float len = 0;
+    for(const auto& seg : globalPaths[pathIndex]) len += seg.length;
+    return len;
+}
+
+void getPathPositionAndAngle(int pathIndex, float dist, glm::vec3& outPos, float& outAngle) {
+    if (pathIndex < 0 || pathIndex >= 5 || globalPaths[pathIndex].empty()) return;
+    float remaining = dist;
+    for (const auto& seg : globalPaths[pathIndex]) {
+        if (remaining <= seg.length) {
+            float t = remaining / seg.length;
+            if (seg.type == STRAIGHT) {
+                outPos = glm::mix(seg.start, seg.end, t);
+                glm::vec3 dir = glm::normalize(seg.end - seg.start);
+                outAngle = atan2(dir.x, dir.z);
+            } else {
+                float currentAngle = seg.startAngle + t * seg.sweepAngle;
+                outPos = seg.center + glm::vec3(cos(currentAngle)*seg.radius, seg.start.y - seg.center.y, sin(currentAngle)*seg.radius);
+                // Angle of curve tangent
+                float tangentAngle = currentAngle + (seg.sweepAngle > 0 ? glm::pi<float>()/2.0f : -glm::pi<float>()/2.0f);
+                glm::vec3 dir(cos(tangentAngle), 0, sin(tangentAngle));
+                outAngle = atan2(dir.x, dir.z);
+            }
+            return;
+        }
+        remaining -= seg.length;
+    }
+    // If beyond, cap to end
+    const auto& seg = globalPaths[pathIndex].back();
+    outPos = seg.end;
+    glm::vec3 dir = (seg.type == STRAIGHT) ? glm::normalize(seg.end - seg.start) : glm::vec3(cos(seg.startAngle + seg.sweepAngle + (seg.sweepAngle > 0 ? glm::pi<float>()/2.0f : -glm::pi<float>()/2.0f)), 0, sin(seg.startAngle + seg.sweepAngle + (seg.sweepAngle > 0 ? glm::pi<float>()/2.0f : -glm::pi<float>()/2.0f)));
+    outAngle = atan2(dir.x, dir.z);
+}
 
 enum BoxStage { RAW = 0, PAINTED = 1, BOUND = 2 };
 enum BoxState { ON_BELT, WAITING_FOR_PICKUP, BEING_PICKED, ON_SHELF };
 
 struct GridBox {
-    int lineIndex;
     float distance;
     BoxStage stage;
     BoxState state = ON_BELT;
-    glm::vec3 worldPos = glm::vec3(0.0f); // used when off-belt
+    glm::vec3 worldPos = glm::vec3(0.0f);
+    int shelfSide = 0; // 0=left(source), 1=right(dest)
+    int shelfTower = 0;
     int shelfTier = 0;
     int shelfSlot = 0;
     float pickTimer = 0.0f;
-    float onShelfT = 0.0f;
+    int pathIndex = 0; // Track which of the 5 belts this box is on
 };
 std::vector<GridBox> gridBoxes;
 
-// Shelf placement tracking
+// Shelf tracking: [Side: 0=Left, 1=Right][Tower][Tier][Slot]
+const int SHELF_TOWERS = 10;
 const int SHELF_TIERS = 5;
 const int SHELF_SLOTS = 8;
-bool shelfOccupied[10][SHELF_TIERS][SHELF_SLOTS] = {}; // 10 shelf towers (5 right, 5 front)
-glm::vec3 shelfTierPos[10][SHELF_TIERS][SHELF_SLOTS]; // world pos of each slot
+bool shelfOccupied[2][SHELF_TOWERS][SHELF_TIERS][SHELF_SLOTS]; 
+glm::vec3 shelfSlotPos[2][SHELF_TOWERS][SHELF_TIERS][SHELF_SLOTS];
+
 
 // Arm pick state machine
 struct ShelfArm {
@@ -124,7 +163,29 @@ struct ShelfArm {
     int towerIndex;
     glm::vec3 effectorPos = glm::vec3(0.0f);
 };
-ShelfArm shelfArms[10];
+ShelfArm shelfArms[20];
+
+struct Particle {
+    glm::vec3 position;
+    glm::vec3 velocity;
+    float life; 
+    float initialLife;
+};
+std::vector<Particle> sparkParticles;
+
+void spawnSparks(glm::vec3 pos, int count) {
+    for (int i = 0; i < count; i++) {
+        Particle p;
+        p.position = pos;
+        float rx = ((rand() % 100) / 50.0f) - 1.0f; // -1 to 1
+        float ry = ((rand() % 100) / 100.0f) + 0.5f; // 0.5 to 1.5
+        float rz = ((rand() % 100) / 50.0f) - 1.0f; // -1 to 1
+        p.velocity = glm::vec3(rx, ry, rz) * 4.0f; 
+        p.life = 0.5f + (rand() % 100) / 200.0f;
+        p.initialLife = p.life;
+        sparkParticles.push_back(p);
+    }
+}
 
 // Basic custom perspective
 glm::mat4 customPerspective(float fovRadians, float aspect, float zNear, float zFar) {
@@ -183,51 +244,75 @@ void drawBindingArm(Shader& shader, glm::vec3 basePos, float baseRotY, unsigned 
 // ★ DRAW CEILING LIGHT FIXTURES ★
 void drawCeilingLights(Shader& shader, unsigned int VAO, unsigned int lightTex, unsigned int yellowTex) {
     glBindVertexArray(VAO);
-    
-    // ★ FLUORESCENT TUBE LIGHTS - running along the X axis at Y=14.8 ★
-    for (float x = -40.0f; x <= 40.0f; x += 15.0f) {
-        // Main tube body (bright yellow to show emissive glow)
-        glBindTexture(GL_TEXTURE_2D, yellowTex);
-        glm::mat4 tubeModel = glm::translate(glm::mat4(1.0f), glm::vec3(x, 14.8f, 0.0f));
-        tubeModel = glm::scale(tubeModel, glm::vec3(6.0f, 0.15f, 0.15f)); // Long tube
-        shader.setMat4("model", tubeModel);
-        glDrawArrays(GL_TRIANGLES, 0, 36);
-        
-        // Mounting bracket (metal)
-        glBindTexture(GL_TEXTURE_2D, lightTex);
-        glm::mat4 bracketModel = glm::translate(glm::mat4(1.0f), glm::vec3(x, 14.9f, 0.0f));
-        bracketModel = glm::scale(bracketModel, glm::vec3(0.3f, 0.2f, 0.3f));
-        shader.setMat4("model", bracketModel);
-        glDrawArrays(GL_TRIANGLES, 0, 36);
+
+    // --- Small pendant lights in a grid across the full ceiling ---
+    for (float x = -80.0f; x <= 80.0f; x += 20.0f) {
+        for (float z = -80.0f; z <= 80.0f; z += 20.0f) {
+            // Ceiling mount plate
+            glBindTexture(GL_TEXTURE_2D, lightTex);
+            glm::mat4 plate = glm::translate(glm::mat4(1.0f), glm::vec3(x, 29.85f, z));
+            plate = glm::scale(plate, glm::vec3(0.6f, 0.3f, 0.6f));
+            shader.setMat4("model", plate);
+            glDrawArrays(GL_TRIANGLES, 0, 36);
+
+            // Drop cord (thin vertical rod)
+            glBindTexture(GL_TEXTURE_2D, lightTex);
+            glm::mat4 cord = glm::translate(glm::mat4(1.0f), glm::vec3(x, 28.5f, z));
+            cord = glm::scale(cord, glm::vec3(0.07f, 2.5f, 0.07f));
+            shader.setMat4("model", cord);
+            glDrawArrays(GL_TRIANGLES, 0, 36);
+
+            // Lamp housing (rectangular shade body, wider bottom)
+            glBindTexture(GL_TEXTURE_2D, lightTex);
+            glm::mat4 shade = glm::translate(glm::mat4(1.0f), glm::vec3(x, 27.1f, z));
+            shade = glm::scale(shade, glm::vec3(1.6f, 0.5f, 1.6f));
+            shader.setMat4("model", shade);
+            glDrawArrays(GL_TRIANGLES, 0, 36);
+
+            // Glowing bottom panel (emissive yellow)
+            glBindTexture(GL_TEXTURE_2D, yellowTex);
+            glm::mat4 glow = glm::translate(glm::mat4(1.0f), glm::vec3(x, 26.84f, z));
+            glow = glm::scale(glow, glm::vec3(1.5f, 0.08f, 1.5f));
+            shader.setMat4("model", glow);
+            glDrawArrays(GL_TRIANGLES, 0, 36);
+        }
     }
-    
-    // ★ INDUSTRIAL BULBS (POINT LIGHT SOURCES) ★
-    // Large main bulb at center ceiling
-    glBindTexture(GL_TEXTURE_2D, yellowTex);
-    glm::mat4 mainBulb = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 14.7f, 0.0f));
-    mainBulb = glm::scale(mainBulb, glm::vec3(0.4f, 0.4f, 0.4f)); // Sphere-like bulb
-    shader.setMat4("model", mainBulb);
-    glDrawArrays(GL_TRIANGLES, 0, 36);
-    
-    // Mounting wire/stem
-    glBindTexture(GL_TEXTURE_2D, lightTex);
-    glm::mat4 stemModel = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 14.5f, 0.0f));
-    stemModel = glm::scale(stemModel, glm::vec3(0.08f, 0.3f, 0.08f));
-    shader.setMat4("model", stemModel);
-    glDrawArrays(GL_TRIANGLES, 0, 36);
-    
-    // ★ SIDE FACTORY LIGHTS (POINT LIGHTS 0 & 1) ★
-    for (float x : {-10.0f, 10.0f}) {
-        glBindTexture(GL_TEXTURE_2D, yellowTex);
-        glm::mat4 sideBulb = glm::translate(glm::mat4(1.0f), glm::vec3(x, 14.7f, 0.0f));
-        sideBulb = glm::scale(sideBulb, glm::vec3(0.35f, 0.35f, 0.35f));
-        shader.setMat4("model", sideBulb);
-        glDrawArrays(GL_TRIANGLES, 0, 36);
-        
+
+    // --- 4 Large industrial pendant lights at point-light positions ---
+    float bigX[] = { -60.0f,  60.0f, -60.0f, 60.0f };
+    float bigZ[] = {  60.0f,  60.0f, -60.0f, -60.0f };
+    for (int i = 0; i < 4; i++) {
+        float px = bigX[i], pz = bigZ[i];
+
+        // Ceiling mount
         glBindTexture(GL_TEXTURE_2D, lightTex);
-        glm::mat4 sideStem = glm::translate(glm::mat4(1.0f), glm::vec3(x, 14.5f, 0.0f));
-        sideStem = glm::scale(sideStem, glm::vec3(0.06f, 0.3f, 0.06f));
-        shader.setMat4("model", sideStem);
+        glm::mat4 mount = glm::translate(glm::mat4(1.0f), glm::vec3(px, 29.8f, pz));
+        mount = glm::scale(mount, glm::vec3(1.2f, 0.4f, 1.2f));
+        shader.setMat4("model", mount);
+        glDrawArrays(GL_TRIANGLES, 0, 36);
+
+        // Thick cord/chain
+        glm::mat4 cord = glm::translate(glm::mat4(1.0f), glm::vec3(px, 27.5f, pz));
+        cord = glm::scale(cord, glm::vec3(0.12f, 4.5f, 0.12f));
+        shader.setMat4("model", cord);
+        glDrawArrays(GL_TRIANGLES, 0, 36);
+
+        // Wide conical housing (top narrower, bottom wider — approximate with two boxes)
+        glm::mat4 hTop = glm::translate(glm::mat4(1.0f), glm::vec3(px, 25.55f, pz));
+        hTop = glm::scale(hTop, glm::vec3(1.8f, 0.6f, 1.8f));
+        shader.setMat4("model", hTop);
+        glDrawArrays(GL_TRIANGLES, 0, 36);
+
+        glm::mat4 hBot = glm::translate(glm::mat4(1.0f), glm::vec3(px, 25.0f, pz));
+        hBot = glm::scale(hBot, glm::vec3(2.6f, 0.4f, 2.6f));
+        shader.setMat4("model", hBot);
+        glDrawArrays(GL_TRIANGLES, 0, 36);
+
+        // Large bright emissive bottom disc
+        glBindTexture(GL_TEXTURE_2D, yellowTex);
+        glm::mat4 glow = glm::translate(glm::mat4(1.0f), glm::vec3(px, 24.78f, pz));
+        glow = glm::scale(glow, glm::vec3(2.5f, 0.1f, 2.5f));
+        shader.setMat4("model", glow);
         glDrawArrays(GL_TRIANGLES, 0, 36);
     }
 }
@@ -283,6 +368,362 @@ void drawShelfArm(Shader& shader, glm::vec3 basePos, glm::vec3 effectorPos, unsi
     }
 }
 
+
+glm::vec3 evaluateBSpline(float t, const glm::vec3& p0, const glm::vec3& p1, const glm::vec3& p2, const glm::vec3& p3) {
+    float it = 1.0f - t;
+    float t2 = t * t;
+    float t3 = t2 * t;
+    
+    float b0 = (it * it * it) / 6.0f;
+    float b1 = (3.0f * t3 - 6.0f * t2 + 4.0f) / 6.0f;
+    float b2 = (-3.0f * t3 + 3.0f * t2 + 3.0f * t + 1.0f) / 6.0f;
+    float b3 = t3 / 6.0f;
+    
+    return p0 * b0 + p1 * b1 + p2 * b2 + p3 * b3;
+}
+
+glm::vec3 evaluateBSplineDerivative(float t, const glm::vec3& p0, const glm::vec3& p1, const glm::vec3& p2, const glm::vec3& p3) {
+    float t2 = t * t;
+    
+    float d0 = -0.5f * (1.0f - t) * (1.0f - t);
+    float d1 = 1.5f * t2 - 2.0f * t;
+    float d2 = -1.5f * t2 + t + 0.5f;
+    float d3 = 0.5f * t2;
+    
+    return p0 * d0 + p1 * d1 + p2 * d2 + p3 * d3;
+}
+
+unsigned int ductVAO = 0;
+int ductVertexCount = 0;
+unsigned int ductTexture = 0;
+
+void buildDuctworkSystem() {
+    std::vector<float> ductVerts;
+    float tubeRadius = 0.8f; // Thickened so components remain intimately combined/mixed
+    int radialSegments = 16;
+    int segmentsPerCurve = 30;
+
+    for (int b = 0; b < 5; b++) {
+        float bz = -40.0f + b * 20.0f;
+        float R = 40.0f;
+        float beltY = (b % 2 == 0) ? 0.8f : 4.5f;
+
+        // The Paint Chambers are exactly halfway through the curve.
+        // Even belts curve towards +Z (sweep = -PI), Mid = bz + R
+        // Odd belts curve towards -Z (sweep = PI), Mid = bz - R
+        float chamberZ = (b % 2 == 0) ? bz + R : bz - R; 
+        
+        // Offset narrowed to physically overlap and structurally combine the 5 pipes.
+        float bundleZ = (b - 2) * 1.1f;
+        
+        std::vector<glm::vec3> cp;
+        // Extend sequence at ends via duplicates for B-spline completeness
+        // Start exactly centered on the Paint Chamber. Tunnel top is at beltY + 1.7f.
+        glm::vec3 startP(0.0f, beltY + 1.0f, chamberZ);
+        cp.push_back(startP); 
+        cp.push_back(startP); 
+        cp.push_back(startP); 
+        
+        // Ascend vertically out of the chamber
+        cp.push_back(glm::vec3(0.0f, 16.0f, chamberZ));
+        cp.push_back(glm::vec3(0.0f, 25.0f, chamberZ));
+        
+        // Bend aggressively into the central ceiling manifold
+        cp.push_back(glm::vec3(0.0f, 28.0f, chamberZ));
+        cp.push_back(glm::vec3(-20.0f, 28.0f, chamberZ * 0.5f)); 
+        cp.push_back(glm::vec3(-40.0f, 28.0f, bundleZ)); 
+        cp.push_back(glm::vec3(-70.0f, 28.0f, bundleZ));
+        
+        glm::vec3 endP(-100.0f, 28.0f, bundleZ);
+        cp.push_back(endP);
+        cp.push_back(endP);
+        cp.push_back(endP);
+
+        // Initialize our Parallel Transport Frame BEFORE the loop to maintain a continuous, twisting-free extrusion
+        glm::vec3 currentUp(1.0f, 0.0f, 0.0f); 
+
+        for (size_t i = 0; i < cp.size() - 3; i++) {
+            const glm::vec3& p0 = cp[i];
+            const glm::vec3& p1 = cp[i+1];
+            const glm::vec3& p2 = cp[i+2];
+            const glm::vec3& p3 = cp[i+3];
+
+            for (int s = 0; s < segmentsPerCurve; s++) {
+                float t1 = (float)s / segmentsPerCurve;
+                float t2 = (float)(s + 1) / segmentsPerCurve;
+
+                glm::vec3 c1 = evaluateBSpline(t1, p0, p1, p2, p3);
+                glm::vec3 c2 = evaluateBSpline(t2, p0, p1, p2, p3);
+
+                glm::vec3 d1 = evaluateBSplineDerivative(t1, p0, p1, p2, p3);
+                glm::vec3 d2 = evaluateBSplineDerivative(t2, p0, p1, p2, p3);
+
+                // FIX FOR NaN "GAPS/HOLES": Check length BEFORE normalizing!
+                // Endpoints have duplicated CPs causing 0-length derivatives
+                if (glm::length(d1) < 0.0001f) d1 = (p0.y < 20.0f) ? glm::vec3(0, 1, 0) : glm::vec3(-1, 0, 0);
+                if (glm::length(d2) < 0.0001f) d2 = (p3.y < 20.0f) ? glm::vec3(0, 1, 0) : glm::vec3(-1, 0, 0);
+
+                glm::vec3 tan1 = glm::normalize(d1);
+                glm::vec3 tan2 = glm::normalize(d2);
+
+                glm::vec3 right1 = glm::cross(tan1, currentUp);
+                if (glm::length(right1) < 0.001f) {
+                    currentUp = glm::vec3(0.0f, 0.0f, 1.0f);
+                    right1 = glm::cross(tan1, currentUp);
+                    if (glm::length(right1) < 0.001f) right1 = glm::cross(tan1, glm::vec3(0.0f, 1.0f, 0.0f));
+                }
+                right1 = glm::normalize(right1);
+                glm::vec3 up1 = glm::normalize(glm::cross(right1, tan1));
+                
+                // Propagate frame to evaluate the second ring properly
+                currentUp = up1;
+
+                glm::vec3 right2 = glm::cross(tan2, currentUp);
+                if (glm::length(right2) < 0.001f) {
+                    right2 = glm::cross(tan2, glm::vec3(0.0f, 0.0f, 1.0f));
+                    if (glm::length(right2) < 0.001f) right2 = glm::cross(tan2, glm::vec3(0.0f, 1.0f, 0.0f));
+                }
+                right2 = glm::normalize(right2);
+                glm::vec3 up2 = glm::normalize(glm::cross(right2, tan2));
+                
+                // CRUCIAL BUG FIX: Propagate the frame UP vector for the next sub-segment (s+1) 
+                // so the quad rings perfectly snap together without tearing gaps between iterations!
+                currentUp = up2;
+
+                for (int r = 0; r < radialSegments; r++) {
+                    float a1 = 2.0f * 3.14159f * (float)r / radialSegments;
+                    float a2 = 2.0f * 3.14159f * (float)(r+1) / radialSegments;
+
+                    float cos1 = cos(a1), sin1 = sin(a1);
+                    float cos2 = cos(a2), sin2 = sin(a2);
+
+                    glm::vec3 n11 = cos1 * right1 + sin1 * up1;
+                    glm::vec3 n12 = cos2 * right1 + sin2 * up1;
+                    glm::vec3 n21 = cos1 * right2 + sin1 * up2;
+                    glm::vec3 n22 = cos2 * right2 + sin2 * up2;
+
+                    glm::vec3 p11 = c1 + tubeRadius * n11;
+                    glm::vec3 p12 = c1 + tubeRadius * n12;
+                    glm::vec3 p21 = c2 + tubeRadius * n21;
+                    glm::vec3 p22 = c2 + tubeRadius * n22;
+
+                    // UV mapping
+                    float u1 = (float)r / radialSegments * 4.0f;
+                    float u2 = (float)(r+1) / radialSegments * 4.0f;
+                    float v1 = (float)(i * segmentsPerCurve + s) / 5.0f;
+                    float v2 = (float)(i * segmentsPerCurve + s + 1) / 5.0f;
+
+                    auto pushV = [&](glm::vec3 p, glm::vec3 n, float u, float v) {
+                        ductVerts.push_back(p.x); ductVerts.push_back(p.y); ductVerts.push_back(p.z);
+                        ductVerts.push_back(n.x); ductVerts.push_back(n.y); ductVerts.push_back(n.z);
+                        ductVerts.push_back(u); ductVerts.push_back(v);
+                    };
+
+                    pushV(p11, n11, u1, v1);
+                    pushV(p12, n12, u2, v1);
+                    pushV(p21, n21, u1, v2);
+
+                    pushV(p12, n12, u2, v1);
+                    pushV(p22, n22, u2, v2);
+                    pushV(p21, n21, u1, v2);
+                }
+            }
+        }
+    }
+
+    glGenVertexArrays(1, &ductVAO);
+    unsigned int vbo;
+    glGenBuffers(1, &vbo);
+    glBindVertexArray(ductVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, ductVerts.size() * sizeof(float), &ductVerts[0], GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
+    glEnableVertexAttribArray(2);
+    ductVertexCount = ductVerts.size() / 8;
+}
+
+std::vector<glm::mat4> catwalkStanchions;
+unsigned int cwFloorVAO = 0;
+int cwFloorVertexCount = 0;
+unsigned int cwRailVAO = 0;
+int cwRailVertexCount = 0;
+
+void buildCatwalkSystem() {
+    std::vector<glm::vec3> cp = {
+        glm::vec3(-100.0f, 16.5f, -15.0f), 
+        glm::vec3(-70.0f, 16.5f, -15.0f),
+        glm::vec3(  10.0f, 16.5f, -15.0f),
+        glm::vec3( 45.0f, 16.5f, -15.0f),
+        glm::vec3( 65.0f, 16.5f, -15.0f), 
+        glm::vec3( 90.0f, 16.5f,  20.0f), 
+        glm::vec3( 65.0f, 16.5f,  55.0f), 
+        glm::vec3( 40.0f, 16.5f,  55.0f), 
+        glm::vec3( 10.0f, 11.5f,  55.0f), 
+        glm::vec3(-30.0f,  6.5f,  55.0f),
+        glm::vec3(-70.0f,  0.5f,  55.0f), 
+        glm::vec3(-100.0f, 0.5f,  55.0f)
+    };
+
+    std::vector<float> floorVerts;
+    std::vector<float> railVerts;
+
+    float catwalkWidth = 2.4f;
+    float railHeight = 1.6f;
+    float tubeRadius = 0.15f;
+    int segmentsPerCurve = 25;
+    int radialSegments = 12;
+    catwalkStanchions.clear();
+
+    for (size_t i = 0; i < cp.size() - 3; i++) {
+        const glm::vec3& p0 = cp[i];
+        const glm::vec3& p1 = cp[i+1];
+        const glm::vec3& p2 = cp[i+2];
+        const glm::vec3& p3 = cp[i+3];
+
+        for (int s = 0; s < segmentsPerCurve; s++) {
+            float t1 = (float)s / segmentsPerCurve;
+            float t2 = (float)(s + 1) / segmentsPerCurve;
+
+            glm::vec3 c1 = evaluateBSpline(t1, p0, p1, p2, p3);
+            glm::vec3 c2 = evaluateBSpline(t2, p0, p1, p2, p3);
+
+            glm::vec3 tan1 = glm::normalize(evaluateBSplineDerivative(t1, p0, p1, p2, p3));
+            glm::vec3 tan2 = glm::normalize(evaluateBSplineDerivative(t2, p0, p1, p2, p3));
+
+            glm::vec3 worldUp(0.0f, 1.0f, 0.0f);
+            glm::vec3 right1 = glm::normalize(glm::cross(tan1, worldUp));
+            glm::vec3 right2 = glm::normalize(glm::cross(tan2, worldUp));
+
+            glm::vec3 up1 = glm::normalize(glm::cross(right1, tan1));
+            glm::vec3 up2 = glm::normalize(glm::cross(right2, tan2));
+
+            glm::vec3 flL1 = c1 - right1 * catwalkWidth;
+            glm::vec3 flR1 = c1 + right1 * catwalkWidth;
+            glm::vec3 flL2 = c2 - right2 * catwalkWidth;
+            glm::vec3 flR2 = c2 + right2 * catwalkWidth;
+
+            float v_coord1 = (float)(i * segmentsPerCurve + s) / 2.0f;
+            float v_coord2 = (float)(i * segmentsPerCurve + s + 1) / 2.0f;
+
+            floorVerts.push_back(flL1.x); floorVerts.push_back(flL1.y); floorVerts.push_back(flL1.z);
+            floorVerts.push_back(up1.x); floorVerts.push_back(up1.y); floorVerts.push_back(up1.z);
+            floorVerts.push_back(0.0f); floorVerts.push_back(v_coord1);
+            floorVerts.push_back(flR1.x); floorVerts.push_back(flR1.y); floorVerts.push_back(flR1.z);
+            floorVerts.push_back(up1.x); floorVerts.push_back(up1.y); floorVerts.push_back(up1.z);
+            floorVerts.push_back(1.0f); floorVerts.push_back(v_coord1);
+            floorVerts.push_back(flL2.x); floorVerts.push_back(flL2.y); floorVerts.push_back(flL2.z);
+            floorVerts.push_back(up2.x); floorVerts.push_back(up2.y); floorVerts.push_back(up2.z);
+            floorVerts.push_back(0.0f); floorVerts.push_back(v_coord2);
+
+            floorVerts.push_back(flR1.x); floorVerts.push_back(flR1.y); floorVerts.push_back(flR1.z);
+            floorVerts.push_back(up1.x); floorVerts.push_back(up1.y); floorVerts.push_back(up1.z);
+            floorVerts.push_back(1.0f); floorVerts.push_back(v_coord1);
+            floorVerts.push_back(flR2.x); floorVerts.push_back(flR2.y); floorVerts.push_back(flR2.z);
+            floorVerts.push_back(up2.x); floorVerts.push_back(up2.y); floorVerts.push_back(up2.z);
+            floorVerts.push_back(1.0f); floorVerts.push_back(v_coord2);
+            floorVerts.push_back(flL2.x); floorVerts.push_back(flL2.y); floorVerts.push_back(flL2.z);
+            floorVerts.push_back(up2.x); floorVerts.push_back(up2.y); floorVerts.push_back(up2.z);
+            floorVerts.push_back(0.0f); floorVerts.push_back(v_coord2);
+
+            glm::vec3 rBaseL1 = flL1 + up1 * railHeight;
+            glm::vec3 rBaseL2 = flL2 + up2 * railHeight;
+            glm::vec3 rBaseR1 = flR1 + up1 * railHeight;
+            glm::vec3 rBaseR2 = flR2 + up2 * railHeight;
+
+            auto pushVert = [&](std::vector<float>& arr, glm::vec3 p, glm::vec3 n, float u, float v) {
+                arr.push_back(p.x); arr.push_back(p.y); arr.push_back(p.z);
+                arr.push_back(n.x); arr.push_back(n.y); arr.push_back(n.z);
+                arr.push_back(u); arr.push_back(v);
+            };
+
+            for (int r = 0; r <= radialSegments; r++) {
+                float angle = 2.0f * 3.14159f * (float)r / radialSegments;
+                float cosA = cos(angle); float sinA = sin(angle);
+                float nextAngle = 2.0f * 3.14159f * (float)(r+1) / radialSegments;
+                float ncosA = cos(nextAngle); float nsinA = sin(nextAngle);
+
+                float u1 = (float)r / radialSegments;
+                float u2 = (float)(r+1) / radialSegments;
+
+                // LEFT RAIL
+                glm::vec3 pTL = rBaseL1 + tubeRadius * (cosA * right1 + sinA * up1);
+                glm::vec3 nTL = glm::normalize(pTL - rBaseL1);
+                glm::vec3 pBL = rBaseL2 + tubeRadius * (cosA * right2 + sinA * up2);
+                glm::vec3 nBL = glm::normalize(pBL - rBaseL2);
+                glm::vec3 pTR = rBaseL1 + tubeRadius * (ncosA * right1 + nsinA * up1);
+                glm::vec3 nTR = glm::normalize(pTR - rBaseL1);
+                glm::vec3 pBR = rBaseL2 + tubeRadius * (ncosA * right2 + nsinA * up2);
+                glm::vec3 nBR = glm::normalize(pBR - rBaseL2);
+
+                pushVert(railVerts, pTL, nTL, u1, v_coord1); pushVert(railVerts, pTR, nTR, u2, v_coord1); pushVert(railVerts, pBL, nBL, u1, v_coord2);
+                pushVert(railVerts, pTR, nTR, u2, v_coord1); pushVert(railVerts, pBR, nBR, u2, v_coord2); pushVert(railVerts, pBL, nBL, u1, v_coord2);
+
+                // RIGHT RAIL
+                glm::vec3 rpTL = rBaseR1 + tubeRadius * (cosA * right1 + sinA * up1);
+                glm::vec3 rnTL = glm::normalize(rpTL - rBaseR1);
+                glm::vec3 rpBL = rBaseR2 + tubeRadius * (cosA * right2 + sinA * up2);
+                glm::vec3 rnBL = glm::normalize(rpBL - rBaseR2);
+                glm::vec3 rpTR = rBaseR1 + tubeRadius * (ncosA * right1 + nsinA * up1);
+                glm::vec3 rnTR = glm::normalize(rpTR - rBaseR1);
+                glm::vec3 rpBR = rBaseR2 + tubeRadius * (ncosA * right2 + nsinA * up2);
+                glm::vec3 rnBR = glm::normalize(rpBR - rBaseR2);
+
+                pushVert(railVerts, rpTL, rnTL, u1, v_coord1); pushVert(railVerts, rpTR, rnTR, u2, v_coord1); pushVert(railVerts, rpBL, rnBL, u1, v_coord2);
+                pushVert(railVerts, rpTR, rnTR, u2, v_coord1); pushVert(railVerts, rpBR, rnBR, u2, v_coord2); pushVert(railVerts, rpBL, rnBL, u1, v_coord2);
+            }
+
+            if (s % 6 == 0) {
+                float mLen = railHeight;
+                for (int side = 0; side < 2; side++) {
+                    glm::vec3 basePt = (side == 0) ? flL1 : flR1;
+                    glm::vec3 midPt = basePt + up1 * (railHeight * 0.5f);
+                    glm::mat4 sMat = glm::translate(glm::mat4(1.0f), midPt);
+                    glm::vec3 yAxis(0, 1, 0);
+                    if (glm::length(glm::cross(yAxis, up1)) > 0.001f) {
+                        float angle = acos(glm::dot(yAxis, up1));
+                        glm::vec3 axis = glm::normalize(glm::cross(yAxis, up1));
+                        sMat = glm::rotate(sMat, angle, axis);
+                    }
+                    sMat = glm::scale(sMat, glm::vec3(0.08f, mLen, 0.08f));
+                    catwalkStanchions.push_back(sMat);
+                }
+            }
+        }
+    }
+
+    cwFloorVertexCount = floorVerts.size() / 8;
+    unsigned int vboF;
+    glGenVertexArrays(1, &cwFloorVAO);
+    glGenBuffers(1, &vboF);
+    glBindVertexArray(cwFloorVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, vboF);
+    glBufferData(GL_ARRAY_BUFFER, floorVerts.size() * sizeof(float), floorVerts.data(), GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
+    glEnableVertexAttribArray(2);
+    
+    cwRailVertexCount = railVerts.size() / 8;
+    unsigned int vboR;
+    glGenVertexArrays(1, &cwRailVAO);
+    glGenBuffers(1, &vboR);
+    glBindVertexArray(cwRailVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, vboR);
+    glBufferData(GL_ARRAY_BUFFER, railVerts.size() * sizeof(float), railVerts.data(), GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
+    glEnableVertexAttribArray(2);
+}
+
 unsigned int archVAO = 0;
 int archVertexCount = 0;
 void buildArch() {
@@ -319,20 +760,391 @@ void buildArch() {
     glEnableVertexAttribArray(2);
 }
 
+unsigned int cylinderVAO = 0;
+int cylinderVertexCount = 0;
+
+unsigned int fanBladeVAO = 0;
+int fanBladeVertexCount = 0;
+unsigned int fanTexture = 0;
+float exhaustFanSpeed = 10.0f;
+float exhaustFanAngle = 0.0f;
+
+void buildFanBlade() {
+    std::vector<float> verts;
+    int uSegments = 20;
+    int vSegments = 20;
+    
+    // Industrial exhaust blades are long, swept, and have deep root chords.
+    float R_root = 0.5f;
+    float R_tip = 3.9f; // Fits cleanly inside our massive R=4 wall hole 
+    float C_root = 1.8f;
+    float C_tip = 0.8f;
+    float A_root = 60.0f * (3.14159f / 180.0f);
+    float A_tip = 25.0f * (3.14159f / 180.0f);
+    float Sweep = -1.0f; 
+    float MaxCamber = 0.4f;
+
+    auto getPoint = [&](float t_u, float t_v) -> glm::vec3 {
+        float u = t_u - 0.5f; 
+        float radius = R_root + t_v * (R_tip - R_root);
+        float chord = C_root + t_v * (C_tip - C_root);
+        float angle = A_root + t_v * (A_tip - A_root);
+        float sweep = Sweep * t_v * t_v; 
+        
+        float camber = MaxCamber * (1.0f - 4.0f * u * u) * (1.0f - t_v * 0.5f); 
+        
+        float z = u * chord * cos(angle) + sweep;
+        float x = u * chord * sin(angle) + camber;
+        return glm::vec3(x, radius, z);
+    };
+
+    auto getNormal = [&](float t_u, float t_v) -> glm::vec3 {
+        float eps = 0.01f;
+        glm::vec3 pu1 = getPoint(glm::clamp(t_u + eps, 0.0f, 1.0f), t_v);
+        glm::vec3 pu0 = getPoint(glm::clamp(t_u - eps, 0.0f, 1.0f), t_v);
+        glm::vec3 pv1 = getPoint(t_u, glm::clamp(t_v + eps, 0.0f, 1.0f));
+        glm::vec3 pv0 = getPoint(t_u, glm::clamp(t_v - eps, 0.0f, 1.0f));
+        glm::vec3 du = glm::normalize(pu1 - pu0);
+        glm::vec3 dv = glm::normalize(pv1 - pv0);
+        return glm::normalize(glm::cross(du, dv)); 
+    };
+
+    auto pushV = [&](float tu, float tv) {
+        glm::vec3 p = getPoint(tu, tv);
+        glm::vec3 n = getNormal(tu, tv);
+        verts.push_back(p.x); verts.push_back(p.y); verts.push_back(p.z);
+        verts.push_back(n.x); verts.push_back(n.y); verts.push_back(n.z);
+        verts.push_back(tu); verts.push_back(tv);
+    };
+    auto pushV_B = [&](float tu, float tv) {
+        glm::vec3 p = getPoint(tu, tv);
+        glm::vec3 n = -getNormal(tu, tv);
+        verts.push_back(p.x); verts.push_back(p.y); verts.push_back(p.z);
+        verts.push_back(n.x); verts.push_back(n.y); verts.push_back(n.z);
+        verts.push_back(tu); verts.push_back(tv);
+    };
+
+    for (int v = 0; v < vSegments; v++) {
+        for (int u = 0; u < uSegments; u++) {
+            float u1 = (float)u / uSegments;
+            float u2 = (float)(u + 1) / uSegments;
+            float v1 = (float)v / vSegments;
+            float v2 = (float)(v + 1) / vSegments;
+
+            pushV(u1, v1);
+            pushV(u2, v1);
+            pushV(u1, v2);
+
+            pushV(u2, v1);
+            pushV(u2, v2);
+            pushV(u1, v2);
+            
+            // Flipped backfaces for solid two-sided culling capabilities
+            pushV_B(u1, v1);
+            pushV_B(u1, v2);
+            pushV_B(u2, v1);
+            
+            pushV_B(u2, v1);
+            pushV_B(u1, v2);
+            pushV_B(u2, v2);
+        }
+    }
+
+    glGenVertexArrays(1, &fanBladeVAO);
+    unsigned int vbo;
+    glGenBuffers(1, &vbo);
+    glBindVertexArray(fanBladeVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, verts.size() * sizeof(float), &verts[0], GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3*sizeof(float)));
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6*sizeof(float)));
+    glEnableVertexAttribArray(2);
+    
+    fanBladeVertexCount = verts.size() / 8;
+}
+void buildCylinder() {
+    std::vector<float> verts;
+    int segments = 36;
+    float radius = 0.5f;
+    float length = 1.0f;
+    
+    // Side surface
+    for (int i = 0; i <= segments; i++) {
+        float theta = 2.0f * glm::pi<float>() * (float)i / (float)segments;
+        float x = radius * cos(theta);
+        float z = radius * sin(theta);
+        float nx = cos(theta);
+        float nz = sin(theta);
+        float u = (float)i / segments;
+        
+        verts.push_back(x); verts.push_back(length / 2); verts.push_back(z);
+        verts.push_back(nx); verts.push_back(0.0f); verts.push_back(nz);
+        verts.push_back(u); verts.push_back(1.0f);
+        
+        verts.push_back(x); verts.push_back(-length / 2); verts.push_back(z);
+        verts.push_back(nx); verts.push_back(0.0f); verts.push_back(nz);
+        verts.push_back(u); verts.push_back(0.0f);
+    }
+    // Top and Bottom Caps could be added here, but for rollers/barrels sides are enough or we can add caps if needed.
+    // For simplicity, we just use the side shell.
+    
+    cylinderVertexCount = (segments + 1) * 2;
+    unsigned int VBO;
+    glGenVertexArrays(1, &cylinderVAO);
+    glGenBuffers(1, &VBO);
+    glBindVertexArray(cylinderVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, VBO);
+    glBufferData(GL_ARRAY_BUFFER, verts.size() * sizeof(float), verts.data(), GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
+    glEnableVertexAttribArray(2);
+}
+
+unsigned int sphereVAO = 0;
+int sphereVertexCount = 0;
+void buildSphere() {
+    std::vector<float> verts;
+    int sectorCount = 36;
+    int stackCount = 18;
+    float radius = 0.5f;
+    
+    float x, y, z, xy;                           // vertex position
+    float nx, ny, nz, lengthInv = 1.0f / radius; // vertex normal
+    float s, t;                                  // vertex texCoord
+    
+    float sectorStep = 2 * glm::pi<float>() / sectorCount;
+    float stackStep = glm::pi<float>() / stackCount;
+    float sectorAngle, stackAngle;
+    
+    for(int i = 0; i <= stackCount; ++i) {
+        stackAngle = glm::pi<float>() / 2 - i * stackStep;
+        xy = radius * cosf(stackAngle);
+        y = radius * sinf(stackAngle);
+        for(int j = 0; j <= sectorCount; ++j) {
+            sectorAngle = j * sectorStep;           
+            x = xy * cosf(sectorAngle);             
+            z = xy * sinf(sectorAngle);             
+            nx = x * lengthInv;
+            ny = y * lengthInv;
+            nz = z * lengthInv;
+            s = (float)j / sectorCount;
+            t = (float)i / stackCount;
+            verts.push_back(x); verts.push_back(y); verts.push_back(z);
+            verts.push_back(nx); verts.push_back(ny); verts.push_back(nz);
+            verts.push_back(s); verts.push_back(t);
+        }
+    }
+    
+    std::vector<unsigned int> indices;
+    int k1, k2;
+    for(int i = 0; i < stackCount; ++i) {
+        k1 = i * (sectorCount + 1);
+        k2 = k1 + sectorCount + 1;
+        for(int j = 0; j < sectorCount; ++j, ++k1, ++k2) {
+            if(i != 0) { indices.push_back(k1); indices.push_back(k2); indices.push_back(k1 + 1); }
+            if(i != (stackCount-1)) { indices.push_back(k1 + 1); indices.push_back(k2); indices.push_back(k2 + 1); }
+        }
+    }
+    
+    sphereVertexCount = indices.size();
+    
+    std::vector<float> finalVerts;
+    for (unsigned int idx : indices) {
+        for (int k=0; k<8; k++) finalVerts.push_back(verts[idx*8 + k]);
+    }
+    
+    unsigned int VBO;
+    glGenVertexArrays(1, &sphereVAO);
+    glGenBuffers(1, &VBO);
+    glBindVertexArray(sphereVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, VBO);
+    glBufferData(GL_ARRAY_BUFFER, finalVerts.size() * sizeof(float), finalVerts.data(), GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
+    glEnableVertexAttribArray(2);
+}
+
+unsigned int coneVAO = 0;
+int coneVertexCount = 0;
+void buildCone() {
+    std::vector<float> verts;
+    int segments = 60;
+    float baseRadius = 2.0f;
+    float coneHeight = 2.2f;
+    
+    // Generate cone outline vertices
+    for (int i = 0; i <= segments; i++) {
+        float angle = 2.0f * glm::pi<float>() * (float)i / (float)segments;
+        float x = baseRadius * cosf(angle);
+        float z = baseRadius * sinf(angle);
+        
+        // Base vertex (at floor)
+        verts.push_back(x); verts.push_back(0.0f); verts.push_back(z);
+        verts.push_back(cosf(angle)); verts.push_back(0.2f); verts.push_back(sinf(angle));
+        verts.push_back((float)i / segments); verts.push_back(0.0f);
+        
+        // Top vertex (apex)
+        verts.push_back(0.0f); verts.push_back(coneHeight); verts.push_back(0.0f);
+        verts.push_back(cosf(angle)); verts.push_back(0.2f); verts.push_back(sinf(angle));
+        verts.push_back((float)i / segments); verts.push_back(1.0f);
+    }
+    
+    coneVertexCount = verts.size() / 8;
+    
+    unsigned int VBO;
+    glGenVertexArrays(1, &coneVAO);
+    glGenBuffers(1, &VBO);
+    glBindVertexArray(coneVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, VBO);
+    glBufferData(GL_ARRAY_BUFFER, verts.size() * sizeof(float), verts.data(), GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
+    glEnableVertexAttribArray(2);
+}
+
+unsigned int ovalVAO = 0;
+int ovalVertexCount = 0;
+void buildOval() {
+    std::vector<float> verts;
+    int segments = 60;
+    float radiusX = 4.5f;  // horizontal radius (scaled up)
+    float radiusZ = 2.8f;  // vertical radius (depth, scaled up)
+    float centerHeight = 0.35f;  // height at center (middle elevated)
+    float edgeHeight = 0.0f;     // height at edges (touching floor)
+    
+    // Generate oval outline vertices with variable height
+    for (int i = 0; i <= segments; i++) {
+        float angle = 2.0f * glm::pi<float>() * (float)i / (float)segments;
+        float x = radiusX * cosf(angle);
+        float z = radiusZ * sinf(angle);
+        
+        // Height varies: center (cos=1) is high, edges (cos=-1) touch floor
+        // Use cosine to create smooth dome shape
+        float cosAngle = cosf(angle);
+        float y = (centerHeight * cosAngle + centerHeight) / 2.0f;
+        y = glm::clamp(y, 0.0f, centerHeight);
+        
+        // Normal pointing up
+        float nx = 0.0f;
+        float ny = 1.0f;
+        float nz = 0.0f;
+        
+        // Texture coordinates
+        float u = (float)i / segments;
+        float v = 0.5f;
+        
+        // Top surface vertex (variable height)
+        verts.push_back(x); verts.push_back(y); verts.push_back(z);
+        verts.push_back(nx); verts.push_back(ny); verts.push_back(nz);
+        verts.push_back(u); verts.push_back(v);
+        
+        // Bottom surface vertex (at floor level)
+        verts.push_back(x); verts.push_back(0.0f); verts.push_back(z);
+        verts.push_back(nx); verts.push_back(ny); verts.push_back(nz);
+        verts.push_back(u); verts.push_back(v);
+    }
+    
+    // Center point for fan triangulation (at peak height)
+    verts.push_back(0.0f); verts.push_back(centerHeight); verts.push_back(0.0f);
+    verts.push_back(0.0f); verts.push_back(1.0f); verts.push_back(0.0f);
+    verts.push_back(0.5f); verts.push_back(0.5f);
+    
+    // Center point at floor level
+    verts.push_back(0.0f); verts.push_back(0.0f); verts.push_back(0.0f);
+    verts.push_back(0.0f); verts.push_back(1.0f); verts.push_back(0.0f);
+    verts.push_back(0.5f); verts.push_back(0.5f);
+    
+    ovalVertexCount = verts.size() / 8;
+    
+    unsigned int VBO;
+    glGenVertexArrays(1, &ovalVAO);
+    glGenBuffers(1, &VBO);
+    glBindVertexArray(ovalVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, VBO);
+    glBufferData(GL_ARRAY_BUFFER, verts.size() * sizeof(float), verts.data(), GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
+    glEnableVertexAttribArray(2);
+}
+
+// Massive Central Wall Exhaust Fan utilizing Ruled Surface aerodynamic blades
+void drawExhaustFan(Shader& shader) {
+    // Shifted from Y=26.0f to Y=21.0f to strongly separate internal geometry from duct pipeline above
+    glm::vec3 fanCenter(-100.0f, 21.0f, 0.0f);
+    
+    // Ensure appropriate darkness for heavy industrial metal
+    shader.setVec3("material.diffuse", glm::vec3(0.5f, 0.5f, 0.5f));
+    shader.setFloat("material.shininess", 32.0f);
+    
+    extern unsigned int fanTexture;
+    glBindTexture(GL_TEXTURE_2D, fanTexture);
+    
+    // Central Hub
+    extern unsigned int cylinderVAO;
+    extern int cylinderVertexCount;
+    glBindVertexArray(cylinderVAO);
+    glm::mat4 hub = glm::translate(glm::mat4(1.0f), fanCenter);
+    // Orient cylinder perfectly along X axis
+    hub = glm::rotate(hub, glm::half_pi<float>(), glm::vec3(0, 0, 1));
+    hub = glm::scale(hub, glm::vec3(1.2f, 4.0f, 1.2f)); // scale to nice hub size
+    shader.setMat4("model", hub);
+    glDrawArrays(GL_TRIANGLES, 0, cylinderVertexCount);
+    
+    // Blades
+    extern unsigned int fanBladeVAO;
+    extern int fanBladeVertexCount;
+    extern float exhaustFanAngle;
+    glBindVertexArray(fanBladeVAO);
+    int numBlades = 7;
+    
+    for (int i = 0; i < numBlades; i++) {
+        float bladeAngle = (2.0f * glm::pi<float>() / numBlades) * i - exhaustFanAngle;
+        glm::mat4 blade = glm::translate(glm::mat4(1.0f), fanCenter);
+        // Spin around X axis
+        blade = glm::rotate(blade, bladeAngle, glm::vec3(1, 0, 0));
+        // Rotate so +Y aligns across planar faces
+        shader.setMat4("model", blade);
+        glDrawArrays(GL_TRIANGLES, 0, fanBladeVertexCount);
+    }
+}
+
 // Industrial Black Box Paint Chamber -> Arched Tunnel
-void drawPaintChamber(Shader& shader, unsigned int cubeVAO, glm::vec3 pos, int lineIndex, unsigned int tunnelTex, unsigned int glowTex, unsigned int pipeTex) {
-    bool isHorizontal = lines[lineIndex].isHorizontal;
+void drawPaintChamber(Shader& shader, unsigned int cubeVAO, int pathIndex, float centerDist, unsigned int tunnelTex, unsigned int glowTex, unsigned int pipeTex) {
+    glm::vec3 pos, dirVec;
+    float angle = 0.0f;
+    extern void getPathPositionAndAngle(int pathIndex, float dist, glm::vec3& outPos, float& outAngle);
+    getPathPositionAndAngle(pathIndex, centerDist, pos, angle);
+    
     // New arched curvy tunnel
+    extern unsigned int archVAO;
     glBindVertexArray(archVAO);
     glBindTexture(GL_TEXTURE_2D, tunnelTex);
-
-    // Position perfectly gripping the outer rails of the belt
+    // Base position
     glm::mat4 tunnel = glm::translate(glm::mat4(1.0f), pos + glm::vec3(0.0f, 0.1f, 0.0f));
-    if (isHorizontal) {
-        tunnel = glm::rotate(tunnel, glm::radians(90.0f), glm::vec3(0.0f, 1.0f, 0.0f));
-    }
+    tunnel = glm::rotate(tunnel, angle, glm::vec3(0.0f, 1.0f, 0.0f));
+    
+    // Ambient glowing neon strips inside Chamber
+    shader.setVec3("material.diffuse", glm::vec3(1.0f, 1.0f, 1.0f));
+    shader.setFloat("material.shininess", 16.0f);
+
     // Scale: Radius=1.5f (width 3.0f to cover 2.9f rails), Length=6.0f
     shader.setMat4("model", glm::scale(tunnel, glm::vec3(1.5f, 1.6f, 6.0f)));
+    extern int archVertexCount;
     glDrawArrays(GL_TRIANGLE_STRIP, 0, archVertexCount);
 
     glBindVertexArray(cubeVAO);
@@ -340,20 +1152,19 @@ void drawPaintChamber(Shader& shader, unsigned int cubeVAO, glm::vec3 pos, int l
     // Glow pad bottom
     glBindTexture(GL_TEXTURE_2D, glowTex);
     glm::mat4 glow = glm::translate(glm::mat4(1.0f), pos + glm::vec3(0.0f, 0.2f, 0.0f));
-    glm::vec3 glowScale = isHorizontal ? glm::vec3(5.8f, 0.4f, 2.0f) : glm::vec3(2.0f, 0.4f, 5.8f);
+    glow = glm::rotate(glow, angle, glm::vec3(0.0f, 1.0f, 0.0f));
+    glm::vec3 glowScale = glm::vec3(2.0f, 0.4f, 5.8f);
     shader.setMat4("model", glm::scale(glow, glowScale));
     glDrawArrays(GL_TRIANGLES, 0, 36);
 
     // Dynamic Sliding Doors
     glBindTexture(GL_TEXTURE_2D, pipeTex);
-    float len = glm::length(lines[lineIndex].end - lines[lineIndex].start);
-    float midDist = len * 0.5f;
-
+    
     for (float zOffset : {-3.0f, 3.0f}) {
-        float doorDist = midDist + zOffset;
+        float doorDist = centerDist + zOffset;
         float min_dist = 999.0f;
         for (const GridBox& b : gridBoxes) {
-            if (b.state == ON_BELT && b.lineIndex == lineIndex) {
+            if (b.state == ON_BELT && b.pathIndex == pathIndex) {
                 float dist = std::abs(b.distance - doorDist);
                 if (dist < min_dist) min_dist = dist;
             }
@@ -365,18 +1176,18 @@ void drawPaintChamber(Shader& shader, unsigned int cubeVAO, glm::vec3 pos, int l
             openRatio = glm::clamp((2.2f - min_dist) / 1.2f, 0.0f, 1.0f);
         }
 
-        glm::vec3 curPos = pos + glm::vec3(0.0f, 0.9f, 0.0f);
-        if (isHorizontal) curPos.x += zOffset; else curPos.z += zOffset;
+        glm::vec3 doorLocalEnd(0.0f, 0.9f, zOffset);
+        glm::mat4 localMat = glm::translate(glm::mat4(1.0f), pos);
+        localMat = glm::rotate(localMat, angle, glm::vec3(0,1,0));
+        glm::vec3 curPos = glm::vec3(localMat * glm::vec4(doorLocalEnd, 1.0f));
 
         // 1. Draw Door Housings (Pillars)
         glBindTexture(GL_TEXTURE_2D, pipeTex);
         for (float sideSign : {-1.0f, 1.0f}) {
-            glm::vec3 pillarPos = curPos;
-            if (isHorizontal) pillarPos.z += sideSign * 1.05f;
-            else pillarPos.x += sideSign * 1.05f;
-
-            glm::mat4 pillar = glm::translate(glm::mat4(1.0f), pillarPos);
-            glm::vec3 pScale = isHorizontal ? glm::vec3(0.12f, 1.6f, 0.8f) : glm::vec3(0.8f, 1.6f, 0.12f);
+            glm::mat4 pillar = glm::translate(glm::mat4(1.0f), curPos);
+            pillar = glm::rotate(pillar, angle, glm::vec3(0,1,0));
+            pillar = glm::translate(pillar, glm::vec3(sideSign * 1.05f, 0, 0));
+            glm::vec3 pScale = glm::vec3(0.8f, 1.6f, 0.12f);
             shader.setMat4("model", glm::scale(pillar, pScale));
             glDrawArrays(GL_TRIANGLES, 0, 36);
         }
@@ -386,7 +1197,8 @@ void drawPaintChamber(Shader& shader, unsigned int cubeVAO, glm::vec3 pos, int l
             glm::vec3 headerPos = curPos;
             headerPos.y += 0.65f;
             glm::mat4 header = glm::translate(glm::mat4(1.0f), headerPos);
-            glm::vec3 hScale = isHorizontal ? glm::vec3(0.12f, 0.3f, 2.9f) : glm::vec3(2.9f, 0.3f, 0.12f);
+            header = glm::rotate(header, angle, glm::vec3(0,1,0));
+            glm::vec3 hScale = glm::vec3(2.9f, 0.3f, 0.12f);
             shader.setMat4("model", glm::scale(header, hScale));
             glDrawArrays(GL_TRIANGLES, 0, 36);
         }
@@ -394,22 +1206,62 @@ void drawPaintChamber(Shader& shader, unsigned int cubeVAO, glm::vec3 pos, int l
         // 3. Draw sliding doors behind the housings
         glBindTexture(GL_TEXTURE_2D, pipeTex);
         for (float sideSign : {-1.0f, 1.0f}) {
-            glm::vec3 doorPos = curPos;
-            if (isHorizontal) doorPos.x -= (zOffset > 0 ? 0.05f : -0.05f); // hide into the tunnel bounds
-            else doorPos.z -= (zOffset > 0 ? 0.05f : -0.05f);
-
             float closeOffset = 0.33f;
             float slideDist = openRatio * 0.65f;
 
-            if (isHorizontal) doorPos.z += sideSign * (closeOffset + slideDist);
-            else doorPos.x += sideSign * (closeOffset + slideDist);
+            glm::mat4 doorMat = glm::translate(glm::mat4(1.0f), curPos);
+            doorMat = glm::rotate(doorMat, angle, glm::vec3(0,1,0));
+            doorMat = glm::translate(doorMat, glm::vec3(sideSign * (closeOffset + slideDist), 0, (zOffset > 0 ? -0.05f : 0.05f)));
 
-            glm::mat4 doorMat = glm::translate(glm::mat4(1.0f), doorPos);
-            glm::vec3 dScale = isHorizontal ? glm::vec3(0.04f, 1.3f, 0.65f) : glm::vec3(0.65f, 1.3f, 0.04f);
-
+            glm::vec3 dScale = glm::vec3(0.65f, 1.3f, 0.04f);
             shader.setMat4("model", glm::scale(doorMat, dScale));
             glDrawArrays(GL_TRIANGLES, 0, 36);
         }
+    }
+}
+
+// Rotating Box-Cleaning Station (using Procedural Cylinders)
+void drawCleaningStation(Shader& shader, unsigned int cubeVAO, int pathIndex, float centerDist, unsigned int cylinderTex, unsigned int mountTex) {
+    glm::vec3 pos;
+    float angle = 0.0f;
+    extern void getPathPositionAndAngle(int pathIndex, float dist, glm::vec3& outPos, float& outAngle);
+    getPathPositionAndAngle(pathIndex, centerDist, pos, angle);
+
+    extern unsigned int cylinderVAO;
+    extern int cylinderVertexCount;
+    float time = (float)glfwGetTime();
+
+    // 1. Draw base mounts holding the rollers (left and right sides of belt)
+    glBindVertexArray(cubeVAO);
+    glBindTexture(GL_TEXTURE_2D, mountTex);
+    
+    for (float side : {-1.5f, 1.5f}) {
+        glm::mat4 mountMat = glm::translate(glm::mat4(1.0f), pos);
+        mountMat = glm::rotate(mountMat, angle, glm::vec3(0,1,0));
+        mountMat = glm::translate(mountMat, glm::vec3(side, 0.4f, 0.0f));
+        shader.setMat4("model", glm::scale(mountMat, glm::vec3(0.2f, 1.0f, 1.0f)));
+        glDrawArrays(GL_TRIANGLES, 0, 36);
+    }
+
+    // 2. Draw 3 spinning brush cylinders spanning across the belt
+    glBindVertexArray(cylinderVAO);
+    glBindTexture(GL_TEXTURE_2D, cylinderTex);
+    
+    for (int i = 0; i < 3; i++) {
+        float zOffset = -0.4f + i * 0.4f;
+        glm::mat4 cylMat = glm::translate(glm::mat4(1.0f), pos);
+        cylMat = glm::rotate(cylMat, angle, glm::vec3(0,1,0));
+        // Hover at Y=0.7 (just touching top of boxes)
+        cylMat = glm::translate(cylMat, glm::vec3(0.0f, 0.7f, zOffset));
+        
+        // Spin rapidly (rotate around local X-axis)
+        float spinSpeed = 10.0f;
+        cylMat = glm::rotate(cylMat, time * spinSpeed + i, glm::vec3(1,0,0));
+        // Rotate 90 deg around Y to span horizontally
+        cylMat = glm::rotate(cylMat, glm::radians(90.0f), glm::vec3(0,1,0));
+        // Scale to reach both sides (length = 3.0)
+        shader.setMat4("model", glm::scale(cylMat, glm::vec3(0.4f, 3.0f, 0.4f)));
+        glDrawArrays(GL_TRIANGLES, 0, cylinderVertexCount);
     }
 }
 
@@ -470,7 +1322,7 @@ void framebuffer_size_callback(GLFWwindow* window, int width, int height);
 void mouse_callback(GLFWwindow* window, double xpos, double ypos);
 void processInput(GLFWwindow* window);
 unsigned int loadTexture(const char* path, unsigned char r = 150, unsigned char g = 150, unsigned char b = 150);
-void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned int conveyorTex, unsigned int floorTex, unsigned int wallTex, unsigned int blueTex, unsigned int tunnelTex, unsigned int whiteLightTex, glm::mat4 view, glm::mat4 projection, glm::vec3 camPos);
+void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned int conveyorTex, unsigned int floorTex, unsigned int wallTex, unsigned int blueTex, unsigned int tunnelTex, unsigned int walkTexture, unsigned int whiteLightTex, unsigned int bakaTexture, unsigned int coneTexture, glm::mat4 view, glm::mat4 projection, glm::vec3 camPos);
 
 int main()
 {
@@ -572,7 +1424,14 @@ int main()
     glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
     glEnableVertexAttribArray(2);
 
+    buildCatwalkSystem();
+    buildDuctworkSystem();
     buildArch();
+    buildFanBlade();
+    buildCylinder();
+    buildSphere();
+    buildOval();
+    buildCone();
 
     std::string boxTexPath = getResourcePath("texture", "box.jpg");
     std::string conveyorTexPath = getResourcePath("texture", "conveyor.jpg");
@@ -580,64 +1439,96 @@ int main()
     std::string wallTexPath = getResourcePath("texture", "wall.jpg");
     std::string blueTexPath = getResourcePath("texture", "blue.jpg");
     std::string tunnelTexPath = getResourcePath("texture", "tunnel.png");
+    std::string randomPropTexPath = getResourcePath("texture", "randomProp.jpg");
+    std::string barrelTexPath = getResourcePath("texture", "barrel.jpg");
+    std::string doorTexPath = getResourcePath("texture", "door.jpg");
+    std::string bakaTexPath = getResourcePath("texture", "baka.jpg");
+    std::string coneTexPath = getResourcePath("texture", "cone.jpg");
+    std::string walkTexPath = "walk.jpg";
+    std::string ductTexPath = "duct.jpg";
+    std::string fanTexPath = "fan.jpg";
 
-    unsigned int boxTexture = loadTexture(boxTexPath.c_str(), 160, 100, 50); // Wooden brown
-    unsigned int conveyorTexture = loadTexture(conveyorTexPath.c_str(), 30, 30, 30); // Very Dark gray
-    unsigned int floorTexture = loadTexture(floorTexPath.c_str(), 180, 180, 180); // Light gray
-    unsigned int wallTexture = loadTexture(wallTexPath.c_str(), 120, 140, 160); // Slate blue/gray
-    unsigned int blueTexture = loadTexture(blueTexPath.c_str(), 0, 150, 255); // Cyan-blue
-    unsigned int tunnelTexture = loadTexture(tunnelTexPath.c_str(), 200, 200, 200); // Tunnel sci-fi plates
-    unsigned int whiteLightTexture = loadTexture("", 255, 255, 255); // Bright white for light fixtures (no path = fallback)
+    unsigned int boxTexture = loadTexture(boxTexPath.c_str(), 160, 100, 50); 
+    unsigned int walkTexture = loadTexture(walkTexPath.c_str(), 200, 200, 200); 
+    unsigned int conveyorTexture = loadTexture(conveyorTexPath.c_str(), 30, 30, 30); 
+    unsigned int floorTexture = loadTexture(floorTexPath.c_str(), 180, 180, 180); 
+    unsigned int wallTexture = loadTexture(wallTexPath.c_str(), 120, 140, 160); 
+    unsigned int blueTexture = loadTexture(blueTexPath.c_str(), 0, 150, 255); 
+    unsigned int tunnelTexture = loadTexture(tunnelTexPath.c_str(), 200, 200, 200); 
+    unsigned int whiteLightTexture = loadTexture("", 255, 255, 255); 
+    unsigned int randomPropTexture = loadTexture(randomPropTexPath.c_str(), 200, 100, 50);
+    unsigned int barrelTexture = loadTexture(barrelTexPath.c_str(), 80, 80, 200);
+    unsigned int doorTexture = loadTexture(doorTexPath.c_str(), 100, 100, 100);
+    unsigned int bakaTexture = loadTexture(bakaTexPath.c_str(), 139, 69, 19);
+    unsigned int coneTexture = loadTexture(coneTexPath.c_str(), 200, 128, 64);
+    ductTexture = loadTexture(ductTexPath.c_str(), 150, 150, 150);
+    fanTexture = loadTexture(fanTexPath.c_str(), 100, 100, 100);
 
-    // Populate hundreds of boxes densely on all grid lines
-    for (int i = 0; i < lines.size(); i++) {
-        float len = glm::length(lines[i].end - lines[i].start);
-        int numBoxes = (int)(len / 4.0f); // Space them exactly per line length
-        float spacing = len / (float)numBoxes;
-        for (int b = 0; b < numBoxes; b++) {
-            float dist = b * spacing;
-            BoxStage stage = RAW;
-            if (dist > len * 0.5f) {
-                stage = (i == 2) ? BOUND : PAINTED;
+    // Define 5 parallel belts — alternating curve direction, R=40, bz from -40 to +40
+    for (int b = 0; b < 5; b++) {
+        globalPaths[b].clear();
+        float bz = -40.0f + b * 20.0f; // -40, -20, 0, 20, 40
+
+        // Alternate: even belts curve toward +Z, odd belts curve toward -Z
+        // to keep all arcs inside the ±100 room boundary
+        float R     = 40.0f;
+        float sweep = (b % 2 == 0) ? -glm::pi<float>() : glm::pi<float>();
+        float beltY = (b % 2 == 0) ? 0.8f : 4.5f; // even=lower, odd=upper
+
+        // Short straight lead-in from arm to arc start
+        globalPaths[b].push_back({STRAIGHT, 6.0f,
+            glm::vec3(-46.0f, beltY, bz), glm::vec3(-R, beltY, bz),
+            glm::vec3(), 0, 0, 0});
+        // Large semicircle
+        globalPaths[b].push_back({CURVE, R * glm::pi<float>(),
+            glm::vec3(-R, beltY, bz), glm::vec3(R, beltY, bz),
+            glm::vec3(0.0f, beltY, bz), R, glm::pi<float>(), sweep});
+        // Short straight lead-out to arm
+        globalPaths[b].push_back({STRAIGHT, 6.0f,
+            glm::vec3(R, beltY, bz), glm::vec3(46.0f, beltY, bz),
+            glm::vec3(), 0, 0, 0});
+    }
+
+    // Initialize Shelves — 10 towers, 2 per belt, offset ±3 in Z so they don't overlap
+    for(int side = 0; side < 2; side++) {
+        for(int t = 0; t < SHELF_TOWERS; t++) {
+            // bz = belt center, then +/- 3 for even/odd tower
+            float beltZ  = -40.0f + (t / 2) * 20.0f;
+            float zOff   = (t % 2 == 0) ? -3.0f : 3.0f;
+            float zPos   = beltZ + zOff;
+
+            for(int tier = 0; tier < SHELF_TIERS; tier++) {
+                for(int slot = 0; slot < SHELF_SLOTS; slot++) {
+                    shelfOccupied[side][t][tier][slot] = (side == 0);
+                    float xPos = (side == 0) ? -52.0f : 52.0f;
+                    float bx   = (side == 0) ?  2.5f  : -2.5f;
+                    float bz   = -3.5f + slot * 1.0f;
+                    shelfSlotPos[side][t][tier][slot] =
+                        glm::vec3(xPos + bx, tier * 3.0f + 0.6f, zPos + bz);
+                }
             }
-            gridBoxes.push_back({ i, dist, stage });
         }
     }
 
-    // Pre-compute shelf slot positions for the 10 destination shelves
-    // 5 right shelves (X=46) for horizontal belts
-    for (int tower = 0; tower < 5; tower++) {
-        float shelfZ = -20.0f + tower * 10.0f;
-        for (int tier = 0; tier < SHELF_TIERS; tier++) {
-            for (int slot = 0; slot < SHELF_SLOTS; slot++) {
-                float bz = -3.5f + slot * 1.0f; // spread across shelf depth
-                shelfTierPos[tower][tier][slot] = glm::vec3(46.0f, tier * 3.0f + 0.6f + 0.5f, shelfZ + bz);
-            }
-        }
-    }
-    // 5 front shelves (Z=46) for vertical belts
-    for (int tower = 0; tower < 5; tower++) {
-        float shelfX = -20.0f + tower * 10.0f;
-        for (int tier = 0; tier < SHELF_TIERS; tier++) {
-            for (int slot = 0; slot < SHELF_SLOTS; slot++) {
-                float bx = -3.5f + slot * 1.0f; // spread across shelf width
-                shelfTierPos[5 + tower][tier][slot] = glm::vec3(shelfX + bx, tier * 3.0f + 0.6f + 0.5f, 46.0f);
-            }
-        }
+    // Initialize the 20 shelf arms — each tower at its own (non-overlapping) Z
+    for (int t = 0; t < SHELF_TOWERS; t++) {
+        float beltZ = -40.0f + (t / 2) * 20.0f;
+        float zOff  = (t % 2 == 0) ? -3.0f : 3.0f;
+        float zPos  = beltZ + zOff;
+
+        // Left Arms (Source) — park just outside belt start X=-46
+        shelfArms[t].basePos    = glm::vec3(-48.0f, 0.0f, zPos);
+        shelfArms[t].baseRotY   = 90.0f;
+        shelfArms[t].towerIndex = t;
+
+        // Right Arms (Dest) — park just outside belt end X=+46
+        shelfArms[10 + t].basePos    = glm::vec3(48.0f, 0.0f, zPos);
+        shelfArms[10 + t].baseRotY   = -90.0f;
+        shelfArms[10 + t].towerIndex = t;
     }
 
-    // Initialize the 10 shelf arms
-    for (int i = 0; i < 5; i++) {
-        float z = -20.0f + i * 10.0f;
-        shelfArms[i].basePos = glm::vec3(38.0f, 0.0f, z + 2.5f); // Right side arms
-        shelfArms[i].baseRotY = -90.0f; // Face left towards belt
-        shelfArms[i].towerIndex = i;
+    gridBoxes.clear();
 
-        float x = -20.0f + i * 10.0f;
-        shelfArms[5 + i].basePos = glm::vec3(x + 2.5f, 0.0f, 38.0f); // Front side arms
-        shelfArms[5 + i].baseRotY = 180.0f; // Face back towards belt
-        shelfArms[5 + i].towerIndex = 5 + i;
-    }
 
     while (!glfwWindowShouldClose(window))
     {
@@ -648,188 +1539,225 @@ int main()
         processInput(window);
 
         // Update animations
+        extern float exhaustFanSpeed;
+        extern float exhaustFanAngle;
+        exhaustFanAngle += exhaustFanSpeed * deltaTime;
+        
         if (fanOn) fanAngle += 150.0f * deltaTime;
         robotBaseAngle += 20.0f * deltaTime;
         robotElbowAngle = sin(glfwGetTime() * 2.0f) * 30.0f;
         // Gripper cycles: open(0.7) -> close(0.1) -> hold -> repeat
         gripperSpread = 0.4f + 0.35f * sin(glfwGetTime() * 2.5f); // oscillates 0.05..0.75
 
-        // --- BOX PROCESSING STAGE MACHINE ---
-        float bindPositions[3] = { 30.0f, 45.0f, 60.0f }; // X = -10, 5, 20 on Z=0 belt
-        float bindRadius = 4.0f;
-        float conveyorSpeed = 1.5f;
+        // Particle Physics
+        for (int i = 0; i < (int)sparkParticles.size(); ) {
+            sparkParticles[i].position += sparkParticles[i].velocity * deltaTime;
+            sparkParticles[i].velocity.y -= 9.8f * deltaTime; // gravity
+            sparkParticles[i].life -= deltaTime;
+            if (sparkParticles[i].life <= 0.0f) {
+                sparkParticles.erase(sparkParticles.begin() + i);
+            } else {
+                i++;
+            }
+        }
 
-        // ----- BOX STATE MACHINE -----
+        // Door Animation (smoothly slides up until offset is 15.0f, down to 0.0f)
+        float doorSpeed = 8.0f;
+        if (doorOpen) {
+            doorYOffset += doorSpeed * deltaTime;
+            if (doorYOffset > 15.0f) doorYOffset = 15.0f;
+        } else {
+            doorYOffset -= doorSpeed * deltaTime;
+            if (doorYOffset < 0.0f) doorYOffset = 0.0f;
+        }
+
+        // --- BOX PROCESSING STAGE MACHINE ---
+        // conveyorSpeed is a global, controlled by + / - keys in processInput()
+        float startClearDist = 6.0f;
+
+        // --- BOX STATE MACHINE ---
         std::vector<GridBox> newBoxes;
 
         for (int i = 0; i < (int)gridBoxes.size(); i++) {
             GridBox& b = gridBoxes[i];
 
             if (b.state == ON_BELT) {
-                float lineLen = glm::length(lines[b.lineIndex].end - lines[b.lineIndex].start);
+                float proposedDist = b.distance + conveyorSpeed * deltaTime;
+                float beltLen = getPathTotalLength(b.pathIndex);
+                float exitDist = beltLen - 1.5f;
 
-                // Unified paint zone perfectly matching the central Paint Chamber!
-                // Box turns blue identically at the exact halfway point, hidden under the machine shell.
-                if (b.distance >= lineLen * 0.5f && b.stage == RAW) {
-                    b.stage = PAINTED;
-                }
-
-                // Horizontal belt line 2 (Z=0) has the binding stations along its path
-                if (b.lineIndex == 2) {
-                    for (int arm = 0; arm < 3; arm++) {
-                        if (b.distance >= bindPositions[arm] - bindRadius &&
-                            b.distance <= bindPositions[arm] + bindRadius)
-                            b.stage = BOUND;
-                    }
-                }
-
-                // --- Move along belt ---
-                b.distance += conveyorSpeed * deltaTime;
-                float exitDist = lineLen - 1.5f; // End of belt near shelf
-
-                if (b.distance >= exitDist) {
-                    if (b.stage == PAINTED || b.stage == BOUND) {
-                        // COLORED box: wait at the end of the belt for robotic arm
-                        glm::vec3 dir = glm::normalize(lines[b.lineIndex].end - lines[b.lineIndex].start);
-                        b.worldPos = lines[b.lineIndex].start + dir * exitDist;
-                        b.worldPos.y = lines[b.lineIndex].start.y + 0.6f;
-                        b.state = WAITING_FOR_PICKUP;
-                        // Spawn replacement box just inside start shelf so it rolls out smoothly
-                        GridBox nb;
-                        nb.lineIndex = b.lineIndex;
-                        nb.distance = -4.0f;
-                        nb.stage = RAW;
-                        nb.state = ON_BELT;
-                        newBoxes.push_back(nb);
-                    }
-                    else {
-                        // RAW box never got colored - loops back to start
-                        b.distance -= lineLen;
-                        b.stage = RAW;
-                    }
-                }
-
-            }
-            else if (b.state == WAITING_FOR_PICKUP) {
-                // Box sits quietly at the end of the horizontal belt
-                // Robotic arm logic will find it and change state to BEING_PICKED
-
-            }
-            else if (b.state == BEING_PICKED) {
-                // Picked by arm. Just safety timeout:
-                b.pickTimer += deltaTime;
-                if (b.pickTimer > 8.0f) {
-                    int tIdx = b.lineIndex;
-                    bool placed = false;
-                    for (int t = 0; t < SHELF_TIERS && !placed; t++) {
-                        for (int s = 0; s < SHELF_SLOTS && !placed; s++) {
-                            if (!shelfOccupied[tIdx][t][s]) {
-                                shelfOccupied[tIdx][t][s] = true;
-                                b.worldPos = shelfTierPos[tIdx][t][s];
-                                b.stage = BOUND;
-                                b.state = ON_SHELF;
-                                placed = true;
-                            }
+                // Basic Box Collision Detection
+                float maxAllowedDist = 9999.0f; 
+                for (int j = 0; j < (int)gridBoxes.size(); j++) {
+                    if (i == j) continue;
+                    const GridBox& ob = gridBoxes[j];
+                    if (ob.pathIndex == b.pathIndex && (ob.state == ON_BELT || ob.state == WAITING_FOR_PICKUP)) {
+                        float distOb = ob.distance;
+                        if (ob.state == WAITING_FOR_PICKUP) distOb = exitDist;
+                        if (distOb > b.distance) {
+                            float allowed = distOb - 2.5f; // Box centers must remain 2.5 units apart
+                            if (allowed < maxAllowedDist) maxAllowedDist = allowed;
                         }
                     }
-                    if (!placed) b.state = ON_SHELF;
                 }
 
+                if (proposedDist > maxAllowedDist) {
+                    proposedDist = maxAllowedDist;
+                }
+
+                if (proposedDist > b.distance) {
+                    b.distance = proposedDist;
+                }
+
+                if (b.distance > beltLen * 0.5f && b.stage == RAW) {
+                    b.stage = PAINTED; // Paint at halfway mark
+                }
+
+                if (b.distance >= exitDist) {
+                    // Wait at end for right arm
+                    glm::vec3 endPos; float tempAng;
+                    getPathPositionAndAngle(b.pathIndex, exitDist, endPos, tempAng);
+                    b.worldPos = endPos;
+                    b.worldPos.y += 0.6f;
+                    b.state = WAITING_FOR_PICKUP;
+                }
             }
-            else if (b.state == ON_SHELF) {
-                b.onShelfT += deltaTime;
+            else if (b.state == BEING_PICKED) {
+                // Picked by arm
+                b.pickTimer += deltaTime;
+                if (b.pickTimer > 8.0f) {
+                    // Safety timeout drop
+                    b.state = ON_SHELF;
+                }
             }
         }
 
-        // Add newly spawned replacement boxes
-        for (auto& nb : newBoxes)
-            gridBoxes.push_back(nb);
-
-        // Arm reach (binding arm oscillation)
-        armReachAngle = -30.0f + sin(glfwGetTime() * 3.0f) * 28.0f;
-
         // ----- SHELF ARM AI -----
-        for (int a = 0; a < 10; a++) {
+        for (int a = 0; a < 20; a++) {
             ShelfArm& arm = shelfArms[a];
+            int side = (a < 10) ? 0 : 1; // 0 = src/left, 1 = dest/right
+            int tIdx = arm.towerIndex;
+            int pathIndex = tIdx / 2; // 0..9 maps to belts 0..4
 
             if (!arm.armBusy) {
-                // Look for a box waiting at the end of THIS arm's belt
-                int closest = -1;
-                for (int i = 0; i < (int)gridBoxes.size(); i++) {
-                    if (gridBoxes[i].state == WAITING_FOR_PICKUP && gridBoxes[i].lineIndex == arm.towerIndex) {
-                        closest = i;
-                        break;
+                if (side == 0) {
+                    // SOURCE ARM: If belt start is clear for this specific belt
+                    bool thisBeltClear = true;
+
+                    // 1. Check no box is ON_BELT near the start
+                    for (const auto& b : gridBoxes) {
+                        if (b.pathIndex == pathIndex && b.distance < startClearDist &&
+                            (b.state == ON_BELT || b.state == BEING_PICKED)) {
+                            thisBeltClear = false; break;
+                        }
                     }
-                }
-                if (closest >= 0) {
-                    // Find a free shelf slot on this tower
-                    for (int t = 0; t < SHELF_TIERS; t++) {
-                        for (int s = 0; s < SHELF_SLOTS; s++) {
-                            if (!shelfOccupied[arm.towerIndex][t][s]) {
-                                shelfOccupied[arm.towerIndex][t][s] = true;
-                                arm.pickBoxIndex = closest;
-                                arm.pickupPos = gridBoxes[closest].worldPos;
-                                arm.placePos = shelfTierPos[arm.towerIndex][t][s];
-                                gridBoxes[closest].state = BEING_PICKED;
-                                gridBoxes[closest].pickTimer = 0.0f;
-                                arm.armBusy = true;
-                                arm.phase = 0.0f;
-                                arm.phaseTimer = 0.0f;
-                                arm.carrying = false;
-                                // Reset idle position precisely
-                                arm.effectorPos = arm.basePos + glm::vec3(0, 10.0f, 0);
-                                goto nextArm;
+
+                    // 2. Check that no sibling source arm for the SAME belt is already busy
+                    //    (prevents two arms placing simultaneously in the same frame)
+                    if (thisBeltClear) {
+                        for (int oa = 0; oa < 10; oa++) {
+                            if (oa != a && shelfArms[oa].armBusy &&
+                                (shelfArms[oa].towerIndex / 2) == pathIndex) {
+                                thisBeltClear = false; break;
+                            }
+                        }
+                    }
+
+                    if (thisBeltClear) {
+                        for (int t = 0; t < SHELF_TIERS; t++) {
+                            for (int s = 0; s < SHELF_SLOTS; s++) {
+                                if (shelfOccupied[side][tIdx][t][s]) {
+                                    shelfOccupied[side][tIdx][t][s] = false;
+                                    
+                                    GridBox nb;
+                                    nb.distance  = 0.0f;
+                                    nb.stage     = RAW;
+                                    nb.state     = BEING_PICKED;
+                                    nb.worldPos  = shelfSlotPos[side][tIdx][t][s];
+                                    nb.pathIndex = pathIndex;
+                                    gridBoxes.push_back(nb);
+                                    
+                                    arm.pickBoxIndex = (int)gridBoxes.size() - 1;
+                                    arm.pickupPos    = shelfSlotPos[side][tIdx][t][s];
+                                    
+                                    glm::vec3 startPos; float junkAng;
+                                    getPathPositionAndAngle(pathIndex, 0.0f, startPos, junkAng);
+                                    arm.placePos = startPos + glm::vec3(0, 0.6f, 0);
+                                    
+                                    arm.armBusy    = true;
+                                    arm.phase      = 0.0f;
+                                    arm.phaseTimer = 0.0f;
+                                    arm.carrying   = false;
+                                    arm.effectorPos = arm.basePos + glm::vec3(0, 10.0f, 0);
+                                    goto nextArm;
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // DEST ARM: Look for box waiting at end of belt this arm is assigned to
+                    int closest = -1;
+                    for (int i = 0; i < (int)gridBoxes.size(); i++) {
+                        if (gridBoxes[i].state == WAITING_FOR_PICKUP && gridBoxes[i].pathIndex == pathIndex) {
+                            closest = i; break;
+                        }
+                    }
+                    if (closest >= 0) {
+                        for (int t = 0; t < SHELF_TIERS; t++) {
+                            for (int s = 0; s < SHELF_SLOTS; s++) {
+                                if (!shelfOccupied[side][tIdx][t][s]) {
+                                    shelfOccupied[side][tIdx][t][s] = true;
+                                    arm.pickBoxIndex = closest;
+                                    arm.pickupPos = gridBoxes[closest].worldPos;
+                                    arm.placePos = shelfSlotPos[side][tIdx][t][s];
+                                    gridBoxes[closest].state = BEING_PICKED;
+                                    gridBoxes[closest].pickTimer = 0.0f;
+                                    arm.armBusy = true;
+                                    arm.phase = 0.0f;
+                                    arm.phaseTimer = 0.0f;
+                                    arm.carrying = false;
+                                    arm.effectorPos = arm.basePos + glm::vec3(0, 10.0f, 0);
+                                    goto nextArm;
+                                }
                             }
                         }
                     }
                 }
-            }
-            else {
+            } else {
                 arm.phaseTimer += deltaTime;
                 glm::vec3 idlePos = arm.basePos + glm::vec3(0, 10.0f, 0);
 
                 if (arm.phase == 0.0f) {
-                    // Fast reach DOWN toward pickup (0.4s)
                     float t = glm::clamp(arm.phaseTimer / 0.4f, 0.0f, 1.0f);
-                    t = t * t * (3.0f - 2.0f * t); // smoothstep
+                    t = t * t * (3.0f - 2.0f * t);
                     arm.effectorPos = glm::mix(idlePos, arm.pickupPos, t);
-
                     if (arm.phaseTimer >= 0.4f) {
-                        arm.phase = 1.0f;
-                        arm.phaseTimer = 0.0f;
-                        arm.carrying = true; // Box grabbed!
+                        arm.phase = 1.0f; arm.phaseTimer = 0.0f;
+                        arm.carrying = true;
+                        spawnSparks(arm.effectorPos, 20); // SPARK TRIGGER
                     }
                 }
                 else if (arm.phase == 1.0f) {
-                    // Fast Lift UP with the box (0.3s)
                     float t = glm::clamp(arm.phaseTimer / 0.3f, 0.0f, 1.0f);
                     t = t * t * (3.0f - 2.0f * t);
                     glm::vec3 liftPos = arm.pickupPos + glm::vec3(0, 4.0f, 0);
                     arm.effectorPos = glm::mix(arm.pickupPos, liftPos, t);
-
                     if (arm.phaseTimer >= 0.3f) { arm.phase = 2.0f; arm.phaseTimer = 0.0f; }
                 }
                 else if (arm.phase == 2.0f) {
-                    // Fast swing toward shelf & lower (0.6s)
                     float t = glm::clamp(arm.phaseTimer / 0.6f, 0.0f, 1.0f);
                     t = t * t * (3.0f - 2.0f * t);
-
                     glm::vec3 liftPos = arm.pickupPos + glm::vec3(0, 4.0f, 0);
                     glm::vec3 dropPos = arm.placePos + glm::vec3(0, 4.0f, 0);
 
-                    if (t < 0.7f) {
-                        arm.effectorPos = glm::mix(liftPos, dropPos, t / 0.7f);
-                    }
-                    else {
-                        arm.effectorPos = glm::mix(dropPos, arm.placePos, (t - 0.7f) / 0.3f);
-                    }
+                    if (t < 0.7f) arm.effectorPos = glm::mix(liftPos, dropPos, t / 0.7f);
+                    else arm.effectorPos = glm::mix(dropPos, arm.placePos, (t - 0.7f) / 0.3f);
 
                     if (arm.phaseTimer >= 0.6f) {
-                        // Place box!
                         if (arm.pickBoxIndex >= 0 && arm.pickBoxIndex < (int)gridBoxes.size()) {
                             gridBoxes[arm.pickBoxIndex].worldPos = arm.placePos;
-                            gridBoxes[arm.pickBoxIndex].state = ON_SHELF;
-                            gridBoxes[arm.pickBoxIndex].stage = BOUND;
+                            gridBoxes[arm.pickBoxIndex].state = (side == 1) ? ON_SHELF : ON_BELT;
+                            if (side == 1) gridBoxes[arm.pickBoxIndex].stage = BOUND;
                         }
                         arm.armBusy = false;
                         arm.carrying = false;
@@ -839,13 +1767,11 @@ int main()
                     }
                 }
 
-                // MATHEMATICAL GLUE: Box perfectly tracks the crane effector
                 if (arm.carrying && arm.pickBoxIndex >= 0 && arm.pickBoxIndex < (int)gridBoxes.size()) {
                     gridBoxes[arm.pickBoxIndex].worldPos = arm.effectorPos;
                 }
             }
 
-            // Auto return to idle when not busy
             if (!arm.armBusy) {
                 arm.effectorPos = glm::mix(arm.effectorPos, arm.basePos + glm::vec3(0, 10.0f, 0), deltaTime * 2.0f);
             }
@@ -857,8 +1783,12 @@ int main()
 
         // Follow a random active box
         if (!gridBoxes.empty()) {
-            glm::vec3 dir = glm::normalize(lines[0].end - lines[0].start);
-            glm::vec3 tgtPos = lines[0].start + dir * gridBoxes[0].distance;
+            glm::vec3 tgtPos; float junkAng;
+            if (gridBoxes[0].state == ON_BELT) {
+                getPathPositionAndAngle(gridBoxes[0].pathIndex, gridBoxes[0].distance, tgtPos, junkAng);
+            } else {
+                tgtPos = gridBoxes[0].worldPos;
+            }
             followCamera.SetTarget(tgtPos);
         }
 
@@ -866,28 +1796,28 @@ int main()
         glfwGetFramebufferSize(window, &width, &height);
 
         float aspect = singleViewport ? (float)width / (float)height : (float)(width / 2) / (float)(height / 2);
-        glm::mat4 projection = customPerspective(glm::radians(45.0f), aspect, 0.1f, 100.0f);
+        glm::mat4 projection = customPerspective(glm::radians(45.0f), aspect, 0.1f, 500.0f);
 
         if (singleViewport) {
             glViewport(0, 0, width, height);
-            renderScene(usePhong ? phongShader : gouraudShader, VAO, boxTexture, conveyorTexture, floorTexture, wallTexture, blueTexture, tunnelTexture, whiteLightTexture, mainCamera.GetViewMatrix(), projection, mainCamera.Position);
+            renderScene(usePhong ? phongShader : gouraudShader, VAO, boxTexture, conveyorTexture, floorTexture, wallTexture, blueTexture, tunnelTexture, walkTexture, whiteLightTexture, bakaTexture, coneTexture, mainCamera.GetViewMatrix(), projection, mainCamera.Position);
         }
         else {
             // 1. Top-Left Viewport (Main Interactive Camera)
             glViewport(0, height / 2, width / 2, height / 2);
-            renderScene(usePhong ? phongShader : gouraudShader, VAO, boxTexture, conveyorTexture, floorTexture, wallTexture, blueTexture, tunnelTexture, whiteLightTexture, mainCamera.GetViewMatrix(), projection, mainCamera.Position);
+            renderScene(usePhong ? phongShader : gouraudShader, VAO, boxTexture, conveyorTexture, floorTexture, wallTexture, blueTexture, tunnelTexture, walkTexture, whiteLightTexture, bakaTexture, coneTexture, mainCamera.GetViewMatrix(), projection, mainCamera.Position);
 
             // 2. Top-Right Viewport (Bird's Eye)
             glViewport(width / 2, height / 2, width / 2, height / 2);
-            renderScene(usePhong ? phongShader : gouraudShader, VAO, boxTexture, conveyorTexture, floorTexture, wallTexture, blueTexture, tunnelTexture, whiteLightTexture, birdEyeCamera.GetViewMatrix(), projection, birdEyeCamera.Position);
+            renderScene(usePhong ? phongShader : gouraudShader, VAO, boxTexture, conveyorTexture, floorTexture, wallTexture, blueTexture, tunnelTexture, walkTexture, whiteLightTexture, bakaTexture, coneTexture, birdEyeCamera.GetViewMatrix(), projection, birdEyeCamera.Position);
 
             // 3. Bottom-Left Viewport (Follow Camera)
             glViewport(0, 0, width / 2, height / 2);
-            renderScene(usePhong ? phongShader : gouraudShader, VAO, boxTexture, conveyorTexture, floorTexture, wallTexture, blueTexture, tunnelTexture, whiteLightTexture, followCamera.GetViewMatrix(), projection, followCamera.Position);
+            renderScene(usePhong ? phongShader : gouraudShader, VAO, boxTexture, conveyorTexture, floorTexture, wallTexture, blueTexture, tunnelTexture, walkTexture, whiteLightTexture, bakaTexture, coneTexture, followCamera.GetViewMatrix(), projection, followCamera.Position);
 
             // 4. Bottom-Right Viewport (Static Front Camera)
             glViewport(width / 2, 0, width / 2, height / 2);
-            renderScene(usePhong ? phongShader : gouraudShader, VAO, boxTexture, conveyorTexture, floorTexture, wallTexture, blueTexture, tunnelTexture, whiteLightTexture, frontCamera.GetViewMatrix(), projection, frontCamera.Position);
+            renderScene(usePhong ? phongShader : gouraudShader, VAO, boxTexture, conveyorTexture, floorTexture, wallTexture, blueTexture, tunnelTexture, walkTexture, whiteLightTexture, bakaTexture, coneTexture, frontCamera.GetViewMatrix(), projection, frontCamera.Position);
         }
 
         glfwSwapBuffers(window);
@@ -900,7 +1830,9 @@ int main()
     return 0;
 }
 
-void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned int conveyorTex, unsigned int floorTex, unsigned int wallTex, unsigned int blueTex, unsigned int tunnelTex, unsigned int whiteLightTex, glm::mat4 view, glm::mat4 projection, glm::vec3 camPos) {
+
+
+void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned int conveyorTex, unsigned int floorTex, unsigned int wallTex, unsigned int blueTex, unsigned int tunnelTex, unsigned int walkTexture, unsigned int whiteLightTex, unsigned int bakaTexture, unsigned int coneTexture, glm::mat4 view, glm::mat4 projection, glm::vec3 camPos) {
     shader.use();
     shader.setMat4("projection", projection);
     shader.setMat4("view", view);
@@ -920,52 +1852,45 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
     shader.setBool("pointLightOn", masterLightOn && pointLightOn);
     shader.setBool("spotLightOn", masterLightOn && spotLightOn);
 
-    // Setup Directional Light
-    shader.setVec3("dirLight.direction", -0.2f, -1.0f, -0.3f);
-    shader.setVec3("dirLight.ambient", 0.3f, 0.3f, 0.3f);
-    shader.setVec3("dirLight.diffuse", 0.5f, 0.5f, 0.5f);
-    shader.setVec3("dirLight.specular", 0.5f, 0.5f, 0.5f);
+    // Setup Directional Light (overhead sky — moderate, not blinding)
+    shader.setVec3("dirLight.direction", 0.0f, -1.0f, 0.0f);
+    shader.setVec3("dirLight.ambient",  0.35f, 0.35f, 0.35f); // base shadow fill
+    shader.setVec3("dirLight.diffuse",  0.55f, 0.55f, 0.55f); // main surface light
+    shader.setVec3("dirLight.specular", 0.2f,  0.2f,  0.2f);
 
-    // Setup Point Lights (1 green, 1 red for factory lighting)
-    shader.setVec3("pointLights[0].position", -10.0f, 8.0f, 0.0f);
-    shader.setVec3("pointLights[0].ambient", 0.0f, 0.1f, 0.3f);
-    shader.setVec3("pointLights[0].diffuse", 0.3f, 0.6f, 1.0f); // Industrial bluish
-    shader.setVec3("pointLights[0].specular", 1.0f, 1.0f, 1.0f);
-    shader.setFloat("pointLights[0].constant", 1.0f);
-    shader.setFloat("pointLights[0].linear", 0.045f);
-    shader.setFloat("pointLights[0].quadratic", 0.0075f);
+    // 4 corner ceiling point lights — industrial warm-white
+    // low attenuation so they reach far, but ambient kept low to avoid washout
+    shader.setVec3("pointLights[0].position", -60.0f, 14.0f, 60.0f);
+    shader.setVec3("pointLights[0].ambient",  0.12f, 0.12f, 0.13f);
+    shader.setVec3("pointLights[0].diffuse",  0.8f,  0.8f,  0.75f);
+    shader.setVec3("pointLights[0].specular", 0.4f,  0.4f,  0.4f);
+    shader.setFloat("pointLights[0].constant",  1.0f);
+    shader.setFloat("pointLights[0].linear",    0.009f);
+    shader.setFloat("pointLights[0].quadratic", 0.0003f);
 
-    shader.setVec3("pointLights[1].position", 10.0f, 8.0f, 0.0f);
-    shader.setVec3("pointLights[1].ambient", 0.0f, 0.1f, 0.3f);
-    shader.setVec3("pointLights[1].diffuse", 0.3f, 0.6f, 1.0f);
-    shader.setVec3("pointLights[1].specular", 1.0f, 1.0f, 1.0f);
-    shader.setFloat("pointLights[1].constant", 1.0f);
-    shader.setFloat("pointLights[1].linear", 0.045f);
-    shader.setFloat("pointLights[1].quadratic", 0.0075f);
+    shader.setVec3("pointLights[1].position", 60.0f, 14.0f, 60.0f);
+    shader.setVec3("pointLights[1].ambient",  0.12f, 0.12f, 0.13f);
+    shader.setVec3("pointLights[1].diffuse",  0.8f,  0.8f,  0.75f);
+    shader.setVec3("pointLights[1].specular", 0.4f,  0.4f,  0.4f);
+    shader.setFloat("pointLights[1].constant",  1.0f);
+    shader.setFloat("pointLights[1].linear",    0.009f);
+    shader.setFloat("pointLights[1].quadratic", 0.0003f);
 
-    // Setup Main Roof Light (pointLights[2])
-    shader.setVec3("pointLights[2].position", 0.0f, 9.8f, 0.0f);
-    if (mainLightOn && masterLightOn && pointLightOn) {
-        shader.setVec3("pointLights[2].ambient", 0.2f, 0.2f, 0.2f);
-        shader.setVec3("pointLights[2].diffuse", 1.0f, 1.0f, 1.0f);
-        shader.setVec3("pointLights[2].specular", 1.0f, 1.0f, 1.0f);
-    }
-    else {
-        shader.setVec3("pointLights[2].ambient", 0.0f, 0.0f, 0.0f);
-        shader.setVec3("pointLights[2].diffuse", 0.0f, 0.0f, 0.0f);
-        shader.setVec3("pointLights[2].specular", 0.0f, 0.0f, 0.0f);
-    }
-    shader.setFloat("pointLights[2].constant", 1.0f);
-    shader.setFloat("pointLights[2].linear", 0.045f);
-    shader.setFloat("pointLights[2].quadratic", 0.0075f);
+    shader.setVec3("pointLights[2].position", -60.0f, 14.0f, -60.0f);
+    shader.setVec3("pointLights[2].ambient",  0.12f, 0.12f, 0.13f);
+    shader.setVec3("pointLights[2].diffuse",  0.8f,  0.8f,  0.75f);
+    shader.setVec3("pointLights[2].specular", 0.4f,  0.4f,  0.4f);
+    shader.setFloat("pointLights[2].constant",  1.0f);
+    shader.setFloat("pointLights[2].linear",    0.009f);
+    shader.setFloat("pointLights[2].quadratic", 0.0003f);
 
-    // Disable pointLight 3 to avoid artifacting
-    shader.setVec3("pointLights[3].ambient", 0.0f, 0.0f, 0.0f);
-    shader.setVec3("pointLights[3].diffuse", 0.0f, 0.0f, 0.0f);
-    shader.setVec3("pointLights[3].specular", 0.0f, 0.0f, 0.0f);
-    shader.setFloat("pointLights[3].constant", 1.0f);
-    shader.setFloat("pointLights[3].linear", 0.09f);
-    shader.setFloat("pointLights[3].quadratic", 0.032f);
+    shader.setVec3("pointLights[3].position", 60.0f, 14.0f, -60.0f);
+    shader.setVec3("pointLights[3].ambient",  0.12f, 0.12f, 0.13f);
+    shader.setVec3("pointLights[3].diffuse",  0.8f,  0.8f,  0.75f);
+    shader.setVec3("pointLights[3].specular", 0.4f,  0.4f,  0.4f);
+    shader.setFloat("pointLights[3].constant",  1.0f);
+    shader.setFloat("pointLights[3].linear",    0.009f);
+    shader.setFloat("pointLights[3].quadratic", 0.0003f);
 
     // Setup Spot Light (Camera flashlight)
     shader.setVec3("spotLight.position", mainCamera.Position);
@@ -985,81 +1910,275 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
     glActiveTexture(GL_TEXTURE0);
 
     // 1. DRAW SPRAWLING CONVEYOR GRID NETWORK
-    for (size_t i = 0; i < lines.size(); i++) {
-        glm::vec3 dir = lines[i].end - lines[i].start;
-        float len = glm::length(dir);
-        glm::vec3 center = lines[i].start + dir * 0.5f;
-        float angle = atan2(dir.x, dir.z);
+    glBindTexture(GL_TEXTURE_2D, conveyorTex);
+    extern std::vector<PathSegment> globalPaths[5];
+    for (int b = 0; b < 5; b++) {
+    for (size_t i = 0; i < globalPaths[b].size(); i++) {
+        const auto& seg = globalPaths[b][i];
+        if (seg.type == STRAIGHT) {
+            glm::vec3 dir = seg.end - seg.start;
+            float len = glm::length(dir);
+            glm::vec3 center = seg.start + dir * 0.5f;
+            float angle = atan2(dir.x, dir.z);
 
-        glm::mat4 model = glm::translate(glm::mat4(1.0f), center);
-        model = glm::rotate(model, angle, glm::vec3(0, 1, 0));
+            glm::mat4 model = glm::translate(glm::mat4(1.0f), center);
+            model = glm::rotate(model, angle, glm::vec3(0, 1, 0));
+            
+            // ★ MOVING BELT SURFACE — scrolling slats ★
+            // Side rails removed for open start/end
 
-        // Main flat belt track
-        glBindTexture(GL_TEXTURE_2D, conveyorTex);
-        glm::mat4 trackModel = glm::scale(model, glm::vec3(2.8f, 0.2f, len)); // belt
-        shader.setMat4("model", trackModel);
-        glDrawArrays(GL_TRIANGLES, 0, 36);
-
-        // Rounded roller "drums" at start and end of track
-        glBindTexture(GL_TEXTURE_2D, wallTex);
-        glm::mat4 drumStart = glm::translate(model, glm::vec3(0.0f, -0.05f, -len / 2.0f));
-        shader.setMat4("model", glm::scale(drumStart, glm::vec3(2.7f, 0.5f, 0.5f)));
-        glDrawArrays(GL_TRIANGLES, 0, 36);
-        glm::mat4 drumEnd = glm::translate(model, glm::vec3(0.0f, -0.05f, len / 2.0f));
-        shader.setMat4("model", glm::scale(drumEnd, glm::vec3(2.7f, 0.5f, 0.5f)));
-        glDrawArrays(GL_TRIANGLES, 0, 36);
-
-        // Glowing Blue Guide Rails
-        glBindTexture(GL_TEXTURE_2D, blueTex);
-        glm::mat4 rail1 = glm::translate(model, glm::vec3(-1.45f, 0.15f, 0.0f));
-        shader.setMat4("model", glm::scale(rail1, glm::vec3(0.1f, 0.3f, len)));
-        glDrawArrays(GL_TRIANGLES, 0, 36);
-
-        glm::mat4 rail2 = glm::translate(model, glm::vec3(1.45f, 0.15f, 0.0f));
-        shader.setMat4("model", glm::scale(rail2, glm::vec3(0.1f, 0.3f, len)));
-        glDrawArrays(GL_TRIANGLES, 0, 36);
-
-        // Concrete support legs repeating along track length
-        glBindTexture(GL_TEXTURE_2D, wallTex);
-        int numLegs = (int)(len / 4.0f);
-        float legLength = lines[i].start.y + 0.9f; // dynamically reach the floor at -0.7f
-        float legYOffset = -legLength / 2.0f;
-        for (int j = 0; j <= numLegs; j++) {
-            float dist = j * 4.0f - len / 2.0f;
-            glm::mat4 legCenter = glm::translate(model, glm::vec3(0.0f, 0.0f, dist));
-
-            glm::mat4 legL = glm::translate(legCenter, glm::vec3(-1.3f, legYOffset, 0.0f));
-            shader.setMat4("model", glm::scale(legL, glm::vec3(0.2f, legLength, 0.2f)));
+            // Flat rigid bed to connect with the rest of the belt curve
+            glBindTexture(GL_TEXTURE_2D, conveyorTex);
+            glm::mat4 bedM = glm::translate(model, glm::vec3(0.0f, 0.0f, 0.0f));
+            shader.setMat4("model", glm::scale(bedM, glm::vec3(2.8f, 0.2f, len)));
             glDrawArrays(GL_TRIANGLES, 0, 36);
 
-            glm::mat4 legR = glm::translate(legCenter, glm::vec3(1.3f, legYOffset, 0.0f));
-            shader.setMat4("model", glm::scale(legR, glm::vec3(0.2f, legLength, 0.2f)));
+            // Animated slats — thin boxes sliding along belt direction
+            glBindTexture(GL_TEXTURE_2D, conveyorTex);
+            {
+                float beltSpeed  = (i == 0 || i == globalPaths[b].size() - 1) ? 0.0f : 3.0f;        // units / sec
+                float slatSpacing = 0.55f;       // gap between slat centres
+                float slatThick  = 0.42f;        // slat length along belt
+                float slatH      = 0.13f;        // slat height (slightly taller to sit on the flat bed)
+                float slatW      = 2.6f;         // spanning belt width
+
+                // Continuous unwrapped scroll - advances every frame, no wrapping
+                float timeScroll = (float)glfwGetTime() * beltSpeed;
+                
+                // Apply modulo only for the pattern repetition, not the motion
+                float scrollPattern = fmod(timeScroll, slatSpacing);
+
+                // Calculate range of slat indices needed to cover the entire segment
+                int startSlat = (int)floor(-(len * 0.5f + slatSpacing) / slatSpacing) - 1;
+                int endSlat = (int)ceil((len * 0.5f + slatSpacing) / slatSpacing) + 1;
+
+                // Draw slats filling the segment with continuous motion
+                for (int sl = startSlat; sl <= endSlat; sl++) {
+                    // Position: base slat spacing minus continuous scroll offset
+                    float d = sl * slatSpacing - scrollPattern - len * 0.5f;
+
+                    glm::mat4 slatM = glm::translate(model,
+                        glm::vec3(0.0f, 0.07f, d)); // centered on belt now
+                    slatM = glm::scale(slatM,
+                        glm::vec3(slatW, slatH, slatThick));
+                    shader.setMat4("model", slatM);
+                    glDrawArrays(GL_TRIANGLES, 0, 36);
+                }
+            }
+
+            // Legs
+            glBindTexture(GL_TEXTURE_2D, wallTex);
+            int numLegs = (int)(len / 4.0f);
+            for (int j = 0; j <= numLegs; j++) {
+                float dist = j * 4.0f - len / 2.0f;
+                glm::mat4 legCenter = glm::translate(model, glm::vec3(0.0f, 0.0f, dist));
+                glm::mat4 legL = glm::translate(legCenter, glm::vec3(-1.3f, -0.45f, 0.0f));
+                shader.setMat4("model", glm::scale(legL, glm::vec3(0.2f, 0.9f, 0.2f)));
+                glDrawArrays(GL_TRIANGLES, 0, 36);
+                glm::mat4 legR = glm::translate(legCenter, glm::vec3(1.3f, -0.45f, 0.0f));
+                shader.setMat4("model", glm::scale(legR, glm::vec3(0.2f, 0.9f, 0.2f)));
+                glDrawArrays(GL_TRIANGLES, 0, 36);
+            }
+
+            // Side guide rails removed for open start/end
+
+            // Spinning Rollers removed completely
+        } else {
+            // CURVE: render as many small boxes approximating the curve with scrolling animation
+            glBindTexture(GL_TEXTURE_2D, conveyorTex);
+            
+            // Belt scrolling for curves
+            float beltSpeed  = 3.0f;
+            float slatSpacing = 0.55f;
+            float timeScroll = (float)glfwGetTime() * beltSpeed;
+            float scrollPattern = fmod(timeScroll, slatSpacing);
+            
+            // Calculate total arc length for scrolling
+            float arcLength = seg.length;
+            int numSlatPositions = (int)(arcLength / slatSpacing) + 3;
+            
+            int segments = 60; // more segments = smoother arc
+            for(int s=0; s<segments; s++) {
+                float t1 = (float)s / segments;
+                float t2 = (float)(s+1) / segments;
+                float a1 = seg.startAngle + t1 * seg.sweepAngle;
+                float a2 = seg.startAngle + t2 * seg.sweepAngle;
+                glm::vec3 p1 = seg.center + glm::vec3(cos(a1)*seg.radius, seg.start.y - seg.center.y, sin(a1)*seg.radius);
+                glm::vec3 p2 = seg.center + glm::vec3(cos(a2)*seg.radius, seg.start.y - seg.center.y, sin(a2)*seg.radius);
+                
+                glm::vec3 dir = p2 - p1;
+                float len = glm::length(dir);
+                glm::vec3 center = p1 + dir * 0.5f;
+                float angle = atan2(dir.x, dir.z);
+
+                glm::mat4 model = glm::translate(glm::mat4(1.0f), center);
+                model = glm::rotate(model, angle, glm::vec3(0, 1, 0));
+                
+                glBindTexture(GL_TEXTURE_2D, conveyorTex);
+                shader.setMat4("model", glm::scale(model, glm::vec3(2.8f, 0.2f, len)));
+                glDrawArrays(GL_TRIANGLES, 0, 36);
+
+                if (s % 5 == 0) {
+                    glBindTexture(GL_TEXTURE_2D, wallTex);
+                    glm::mat4 legL = glm::translate(model, glm::vec3(-1.3f, -0.45f, 0.0f));
+                    shader.setMat4("model", glm::scale(legL, glm::vec3(0.2f, 0.9f, 0.2f)));
+                    glDrawArrays(GL_TRIANGLES, 0, 36);
+                    glm::mat4 legR = glm::translate(model, glm::vec3(1.3f, -0.45f, 0.0f));
+                    shader.setMat4("model", glm::scale(legR, glm::vec3(0.2f, 0.9f, 0.2f)));
+                    glDrawArrays(GL_TRIANGLES, 0, 36);
+                }
+            }
+            
+            // Draw animated slats on the curve
+            glBindTexture(GL_TEXTURE_2D, conveyorTex);
+            for (int sl = 0; sl < numSlatPositions; sl++) {
+                // Position along arc (distance parameter)
+                float distAlongArc = sl * slatSpacing - scrollPattern;
+                
+                // Skip if completely outside the arc
+                if (distAlongArc < -slatSpacing || distAlongArc > arcLength + slatSpacing) continue;
+                
+                // Clamp distance to valid arc range
+                float clampedDist = glm::clamp(distAlongArc, 0.0f, arcLength);
+                
+                // Normalize to [0, 1] for interpolation
+                float t = clampedDist / arcLength;
+                
+                // Get position and angle on the curve
+                float currentAngle = seg.startAngle + t * seg.sweepAngle;
+                glm::vec3 slatPos = seg.center + glm::vec3(
+                    cos(currentAngle) * seg.radius, 
+                    seg.start.y - seg.center.y, 
+                    sin(currentAngle) * seg.radius
+                );
+                
+                // Tangent direction along curve
+                float tangentAngle = currentAngle + (seg.sweepAngle > 0 ? glm::pi<float>()/2.0f : -glm::pi<float>()/2.0f);
+                float slatAngle = atan2(sin(tangentAngle), cos(tangentAngle));
+                
+                glm::mat4 slatM = glm::translate(glm::mat4(1.0f), slatPos);
+                slatM = glm::rotate(slatM, slatAngle, glm::vec3(0, 1, 0));
+                slatM = glm::scale(slatM, glm::vec3(2.6f, 0.12f, 0.42f));
+                shader.setMat4("model", slatM);
+                glDrawArrays(GL_TRIANGLES, 0, 36);
+            }
+        }
+    }
+    }
+
+    // 1c. CURVED GUIDE RAILS on every belt arc (inner + outer side barriers)
+    // These force boxes to follow the curve — realistic side walls
+    glBindTexture(GL_TEXTURE_2D, wallTex);
+    for (int b = 0; b < 5; b++) {
+        for (size_t si = 0; si < globalPaths[b].size(); si++) {
+            const auto& seg = globalPaths[b][si];
+            if (seg.type != CURVE) continue;
+
+            float bY      = seg.start.y; // belt surface Y
+            float railH   = 0.55f;       // rail height above belt surface
+            float railW   = 0.12f;       // rail thickness
+            float innerR  = seg.radius - 1.6f; // inner edge radius
+            float outerR  = seg.radius + 1.6f; // outer edge radius
+
+            int railSegs = 40;
+            for (int s = 0; s < railSegs; s++) {
+                float t1 = (float)s       / railSegs;
+                float t2 = (float)(s + 1) / railSegs;
+                float a1 = seg.startAngle + t1 * seg.sweepAngle;
+                float a2 = seg.startAngle + t2 * seg.sweepAngle;
+
+                // Midpoint angle for this segment
+                float am = (a1 + a2) * 0.5f;
+                float dx = cos(am);
+                float dz = sin(am);
+
+                // Chord length for scaling
+                glm::vec3 pi1 = seg.center + glm::vec3(cos(a1)*innerR, 0.0f, sin(a1)*innerR);
+                glm::vec3 pi2 = seg.center + glm::vec3(cos(a2)*innerR, 0.0f, sin(a2)*innerR);
+                float segLen = glm::length(pi2 - pi1);
+
+                // Direction of chord
+                glm::vec3 chDir = glm::normalize(pi2 - pi1);
+                float chAngle = atan2(chDir.x, chDir.z);
+
+                // Inner rail
+                glm::vec3 innerMid = seg.center + glm::vec3(dx * innerR, 0.0f, dz * innerR);
+                glm::mat4 innerRail = glm::translate(glm::mat4(1.0f),
+                    glm::vec3(innerMid.x, bY + railH * 0.5f, innerMid.z));
+                innerRail = glm::rotate(innerRail, chAngle, glm::vec3(0,1,0));
+                innerRail = glm::scale(innerRail, glm::vec3(railW, railH, segLen + 0.05f));
+                shader.setMat4("model", innerRail);
+                glDrawArrays(GL_TRIANGLES, 0, 36);
+
+                // Outer rail
+                glm::vec3 outerMid = seg.center + glm::vec3(dx * outerR, 0.0f, dz * outerR);
+                glm::mat4 outerRail = glm::translate(glm::mat4(1.0f),
+                    glm::vec3(outerMid.x, bY + railH * 0.5f, outerMid.z));
+                outerRail = glm::rotate(outerRail, chAngle, glm::vec3(0,1,0));
+                outerRail = glm::scale(outerRail, glm::vec3(railW, railH, segLen + 0.05f));
+                shader.setMat4("model", outerRail);
+                glDrawArrays(GL_TRIANGLES, 0, 36);
+            }
+        }
+    }
+
+    // 1b. SUPPORT PILLARS for elevated belts (belts 1 and 3, Y=4.5)
+    glBindTexture(GL_TEXTURE_2D, wallTex);
+    for (int b = 1; b <= 3; b += 2) {         // odd belts only
+        float bz     = -40.0f + b * 20.0f;    // -20 or +20
+        float beltY  = 4.5f;
+        float pillarH = beltY - 0.25f;         // stop BELOW belt underside (Y≈4.25)
+        float R = 40.0f;
+
+        // Pillars along the arc: sample 9 evenly-spaced angles
+        // sweep = +PI → angles go from PI to 2*PI (curves through -Z)
+        for (int p = 0; p <= 8; p++) {
+            float frac  = (float)p / 8.0f;
+            float angle = glm::pi<float>() + frac * glm::pi<float>(); // PI → 2PI
+            float px    = cos(angle) * R;
+            float pz    = bz + sin(angle) * R;
+
+            glm::mat4 pillar = glm::translate(glm::mat4(1.0f),
+                                              glm::vec3(px, pillarH * 0.5f, pz));
+            pillar = glm::scale(pillar, glm::vec3(0.35f, pillarH, 0.35f));
+            shader.setMat4("model", pillar);
+            glDrawArrays(GL_TRIANGLES, 0, 36);
+
+            // Crossbeam cap at top
+            glm::mat4 cap = glm::translate(glm::mat4(1.0f),
+                                           glm::vec3(px, pillarH + 0.15f, pz));
+            cap = glm::scale(cap, glm::vec3(0.7f, 0.3f, 0.7f));
+            shader.setMat4("model", cap);
+            glDrawArrays(GL_TRIANGLES, 0, 36);
+        }
+
+        // Pillars under straight lead-in (X = -46 to -40) and lead-out (X = 40 to 46)
+        for (float sx : {-46.0f, -43.0f, -40.0f, 40.0f, 43.0f, 46.0f}) {
+            glm::mat4 pillar = glm::translate(glm::mat4(1.0f),
+                                              glm::vec3(sx, pillarH * 0.5f, bz));
+            pillar = glm::scale(pillar, glm::vec3(0.35f, pillarH, 0.35f));
+            shader.setMat4("model", pillar);
             glDrawArrays(GL_TRIANGLES, 0, 36);
         }
     }
 
     // 2. DRAW MASSIVE BOX POPULATION (Animated)
+    extern void getPathPositionAndAngle(int pathIndex, float dist, glm::vec3& outPos, float& outAngle);
     for (size_t i = 0; i < gridBoxes.size(); i++) {
         const GridBox& gb = gridBoxes[i];
         glm::vec3 pos;
         float angle = 0.0f;
 
         if (gb.state == ON_BELT) {
-            glm::vec3 dir = glm::normalize(lines[gb.lineIndex].end - lines[gb.lineIndex].start);
-            pos = lines[gb.lineIndex].start + dir * gb.distance;
-            pos.y = lines[gb.lineIndex].start.y + 0.6f;
-            angle = atan2(dir.x, dir.z);
-        }
-        else {
-            // Off-belt states: use worldPos
+            getPathPositionAndAngle(gb.pathIndex, gb.distance, pos, angle);
+            pos.y += 0.6f;
+        } else {
             pos = gb.worldPos;
         }
 
-        // Choose color/texture by stage
         if (gb.stage == PAINTED || gb.stage == BOUND) {
             glBindTexture(GL_TEXTURE_2D, blueTex);
-        }
-        else {
+        } else {
             glBindTexture(GL_TEXTURE_2D, boxTex);
         }
 
@@ -1069,7 +2188,6 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
         shader.setMat4("model", model);
         glDrawArrays(GL_TRIANGLES, 0, 36);
 
-        // If BOUND: draw rope bands over the box
         if (gb.stage == BOUND) {
             glBindTexture(GL_TEXTURE_2D, wallTex);
             float offsets[3] = { -0.3f, 0.0f, 0.3f };
@@ -1083,52 +2201,45 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
         }
     }
 
-    // 3. DRAW MASSIVE SHELVING — Left/Right Walls & Back/Front Walls
-    for (int wall = 0; wall < 4; wall++) {
-        // wall 0: Left (X=-46), wall 1: Right (X=46)
-        // wall 2: Back (Z=-46), wall 3: Front (Z=46)
-        bool isBoundSide = (wall == 1 || wall == 3);
-        float mainCoord = (wall == 0 || wall == 2) ? -46.0f : 46.0f;
-        bool isHorizontal = (wall < 2);
-
-        for (int tower = 0; tower < 5; tower++) {
-            float crossOffset = -20.0f + tower * 10.0f;
-            float shelfX = isHorizontal ? mainCoord : crossOffset;
-            float shelfZ = isHorizontal ? crossOffset : mainCoord;
-
-            // Horizontal shelf tiers
-            for (int y = 0; y < 5; y++) {
+    // 3. DRAW MASSIVE SHELVING
+    for (int side = 0; side < 2; side++) {
+        for (int t = 0; t < SHELF_TOWERS; t++) {
+            float beltZ = -40.0f + (t / 2) * 20.0f;
+            float zOff  = (t % 2 == 0) ? -3.0f : 3.0f;
+            for (int y = 0; y < SHELF_TIERS; y++) {
+                float xPos = (side == 0) ? -52.0f : 52.0f;
+                float zPos = beltZ + zOff;
+                
+                // Shelf Board
                 glBindTexture(GL_TEXTURE_2D, conveyorTex);
-                glm::mat4 model = glm::translate(glm::mat4(1.0f), glm::vec3(shelfX, y * 3.0f, shelfZ));
-                model = glm::scale(model, isHorizontal ? glm::vec3(4.0f, 0.2f, 9.0f) : glm::vec3(9.0f, 0.2f, 4.0f));
+                glm::mat4 model = glm::translate(glm::mat4(1.0f), glm::vec3(xPos, y * 3.0f, zPos));
+                model = glm::scale(model, glm::vec3(4.0f, 0.2f, 9.0f));
                 shader.setMat4("model", model);
                 glDrawArrays(GL_TRIANGLES, 0, 36);
-
-                // Aesthetic static boxes to make shelves look full initially
-                for (float b_cross = -3.5f; b_cross <= 3.5f; b_cross += 1.5f) {
-                    if ((int)(b_cross * 10.0f + y + tower) % 4 == 0) continue; // natural gaps
-
-                    // Only draw static boxes on the RAW sides
-                    if (!isBoundSide) {
-                        glBindTexture(GL_TEXTURE_2D, boxTex);
-                        float bx = isHorizontal ? 0.0f : b_cross;
-                        float bz = isHorizontal ? b_cross : 0.0f;
-                        glm::mat4 bModel = glm::translate(glm::mat4(1.0f), glm::vec3(shelfX + bx, y * 3.0f + 0.6f, shelfZ + bz));
-                        shader.setMat4("model", glm::scale(bModel, glm::vec3(1.2f, 1.0f, 1.0f)));
+                
+                // Draw static boxes if occupied
+                glBindTexture(GL_TEXTURE_2D, boxTex);
+                for (int s = 0; s < SHELF_SLOTS; s++) {
+                    if (shelfOccupied[side][t][y][s]) {
+                        glm::mat4 bModel = glm::translate(glm::mat4(1.0f), shelfSlotPos[side][t][y][s]);
+                        bModel = glm::scale(bModel, glm::vec3(1.2f, 1.0f, 1.0f));
+                        shader.setMat4("model", bModel);
                         glDrawArrays(GL_TRIANGLES, 0, 36);
                     }
                 }
             }
-
-            // Vertical posts for the tower
+            
+            // Vertical posts
             glBindTexture(GL_TEXTURE_2D, conveyorTex);
-            float p_main = 1.8f, p_cross = 4.3f;
-            float pxArr[2] = { isHorizontal ? -p_main : -p_cross, isHorizontal ? p_main : p_cross };
-            float pzArr[2] = { isHorizontal ? -p_cross : -p_main, isHorizontal ? p_cross : p_main };
-
+            float xPos = (side == 0) ? -52.0f : 52.0f;
+            float beltZ2 = -40.0f + (t / 2) * 20.0f;
+            float zOff2  = (t % 2 == 0) ? -3.0f : 3.0f;
+            float zPos = beltZ2 + zOff2;
+            float pxArr[2] = { -1.8f, 1.8f };
+            float pzArr[2] = { -4.3f, 4.3f };
             for (int p_i = 0; p_i < 2; p_i++) {
                 for (int p_j = 0; p_j < 2; p_j++) {
-                    glm::mat4 model = glm::translate(glm::mat4(1.0f), glm::vec3(shelfX + pxArr[p_i], 6.0f, shelfZ + pzArr[p_j]));
+                    glm::mat4 model = glm::translate(glm::mat4(1.0f), glm::vec3(xPos + pxArr[p_i], 6.0f, zPos + pzArr[p_j]));
                     model = glm::scale(model, glm::vec3(0.4f, 12.0f, 0.4f));
                     shader.setMat4("model", model);
                     glDrawArrays(GL_TRIANGLES, 0, 36);
@@ -1137,67 +2248,270 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
         }
     }
 
-    // 3.5 PAINT CHAMBERS — on EVERY BELT
-    for (size_t i = 0; i < lines.size(); i++) {
-        glm::vec3 midPoint = (lines[i].start + lines[i].end) * 0.5f;
-        drawPaintChamber(shader, VAO, midPoint, i, tunnelTex, blueTex, wallTex);
+    // 3.5 FACILITIES (Applied to all 5 Belts)
+    extern float getPathTotalLength(int pathIndex);
+    for (int b = 0; b < 5; b++) {
+        float len = getPathTotalLength(b);
+        // Box Cleaning Stations (2 procedural spinning roller machines per belt)
+        // drawCleaningStation(shader, VAO, b, len * 0.25f, conveyorTex, wallTex);
+        // drawCleaningStation(shader, VAO, b, len * 0.75f, conveyorTex, wallTex);
+
+        // CENTRAL PAINT CHAMBER
+        drawPaintChamber(shader, VAO, b, len * 0.5f, tunnelTex, blueTex, wallTex);
     }
 
-    // 4a. BINDING ARM — 1 arm beside lower belt at Z=0 (near binding zone at X=-10)
-    //     Body FIXED, only gripper opens/closes around the passing box
-    drawBindingArm(shader, glm::vec3(-10.0f, 0.0f, 3.0f), 180.0f, conveyorTex, wallTex, gripperSpread);
-
-    // 4b. SHELF PLACEMENT ARMS — 10 Cartesian Stacker Cranes
-    for (int i = 0; i < 10; i++) {
+    // 4. DRAW ARMS
+    for (int i = 0; i < 20; i++) {
         drawShelfArm(shader, shelfArms[i].basePos, shelfArms[i].effectorPos, conveyorTex, wallTex);
     }
 
-    // 5. DRAW MASSIVE WAREHOUSE ROOM (Floor, Concrete Pillars, Ceiling)
+    // 5. DRAW WAREHOUSE ROOM (200x200)
+    // 5. DRAW WAREHOUSE ROOM (200x200) - Tiled to fix texture stretching
     glBindTexture(GL_TEXTURE_2D, floorTex);
+    // Draw floor in 20x20 chunks
+    for (float x = -90.0f; x <= 90.0f; x += 20.0f) {
+        for (float z = -90.0f; z <= 90.0f; z += 20.0f) {
+            glm::mat4 model = glm::translate(glm::mat4(1.0f), glm::vec3(x, -0.7f, z));
+            model = glm::scale(model, glm::vec3(20.0f, 0.1f, 20.0f));
+            shader.setMat4("model", model);
+            glDrawArrays(GL_TRIANGLES, 0, 36);
+            
+            // Ceiling
+            glm::mat4 cModel = glm::translate(glm::mat4(1.0f), glm::vec3(x, 30.0f, z));
+            cModel = glm::scale(cModel, glm::vec3(20.0f, 0.1f, 20.0f));
+            shader.setMat4("model", cModel);
+            glDrawArrays(GL_TRIANGLES, 0, 36);
+        }
+    }
 
-    // Concrete Floor (100x100)
-    glm::mat4 model = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, -0.7f, 0.0f));
-    model = glm::scale(model, glm::vec3(100.0f, 0.1f, 100.0f));
-    shader.setMat4("model", model);
-    glDrawArrays(GL_TRIANGLES, 0, 36);
+    // Factory Walls Boundary (Thickness 1, Height 30)
+    glBindTexture(GL_TEXTURE_2D, wallTex);
+    
+    // Back Wall (Z = -100), Tiled along X
+    for (float x = -90.0f; x <= 90.0f; x += 20.0f) {
+        glm::mat4 model = glm::translate(glm::mat4(1.0f), glm::vec3(x, 14.5f, -100.0f));
+        model = glm::scale(model, glm::vec3(20.0f, 30.0f, 1.0f));
+        shader.setMat4("model", model); glDrawArrays(GL_TRIANGLES, 0, 36);
+    }
+    
+    // Front Wall — 25-unit chunks align perfectly with the 50-unit door gap
+    // Door gap: X = -25 to +25. Wall covers: -100..-25 (left) and +25..+100 (right).
+    // 3 chunks of width 25 each side, centered at ±37.5, ±62.5, ±87.5
 
-    // Ceiling Base
-    model = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 15.0f, 0.0f));
-    model = glm::scale(model, glm::vec3(100.0f, 0.1f, 100.0f));
-    shader.setMat4("model", model);
-    glDrawArrays(GL_TRIANGLES, 0, 36);
-
-    // ★ DRAW CEILING LIGHT FIXTURES ★
-    drawCeilingLights(shader, VAO, wallTex, whiteLightTex);
-
-    // Large Main Concrete Pillars
-    float pilX[6] = { -25.0f, 25.0f, -25.0f, 25.0f, 0.0f, 0.0f };
-    float pilZ[6] = { -25.0f, -25.0f, 25.0f, 25.0f, -25.0f, 25.0f };
-    for (int i = 0; i < 6; i++) {
-        model = glm::mat4(1.0f);
-        model = glm::translate(model, glm::vec3(pilX[i], 7.0f, pilZ[i]));
-        model = glm::scale(model, glm::vec3(2.5f, 16.0f, 2.5f));
+    // Left side: centers at -87.5, -62.5, -37.5  (each 25 wide)
+    float fwLeftX[] = { -87.5f, -62.5f, -37.5f };
+    for (float x : fwLeftX) {
+        glm::mat4 model = glm::translate(glm::mat4(1.0f), glm::vec3(x, 14.5f, 100.0f));
+        model = glm::scale(model, glm::vec3(25.0f, 30.0f, 1.0f));
+        shader.setMat4("model", model); glDrawArrays(GL_TRIANGLES, 0, 36);
+    }
+    // Right side: centers at 37.5, 62.5, 87.5
+    float fwRightX[] = { 37.5f, 62.5f, 87.5f };
+    for (float x : fwRightX) {
+        glm::mat4 model = glm::translate(glm::mat4(1.0f), glm::vec3(x, 14.5f, 100.0f));
+        model = glm::scale(model, glm::vec3(25.0f, 30.0f, 1.0f));
+        shader.setMat4("model", model); glDrawArrays(GL_TRIANGLES, 0, 36);
+    }
+    // Top strip above door (Y: 20..30, height=10) — two 25-unit halves to match tiling
+    {
+        glm::mat4 model = glm::translate(glm::mat4(1.0f), glm::vec3(-12.5f, 25.0f, 100.0f));
+        model = glm::scale(model, glm::vec3(25.0f, 10.0f, 1.0f));
+        shader.setMat4("model", model); glDrawArrays(GL_TRIANGLES, 0, 36);
+        model = glm::translate(glm::mat4(1.0f), glm::vec3(12.5f, 25.0f, 100.0f));
+        model = glm::scale(model, glm::vec3(25.0f, 10.0f, 1.0f));
         shader.setMat4("model", model); glDrawArrays(GL_TRIANGLES, 0, 36);
     }
 
-    // Warehouse Walls Boundaries
+    // --- 7.5 DYNAMIC B-SPLINE DUCTWORK ---
+    extern unsigned int ductVAO;
+    extern int ductVertexCount;
+    extern unsigned int ductTexture;
+    
+    glBindVertexArray(ductVAO);
+    glBindTexture(GL_TEXTURE_2D, ductTexture);
+    
+    // High specular for shiny metal exterior
+    shader.setFloat("material.shininess", 64.0f);
+    shader.setVec3("material.specular", 1.0f, 1.0f, 1.0f);
+    
+    glm::mat4 ductModel = glm::mat4(1.0f);
+    shader.setMat4("model", ductModel);
+    glDrawArrays(GL_TRIANGLES, 0, ductVertexCount);
+    
+    // Restore default specular
+    shader.setFloat("material.shininess", 32.0f);
+    shader.setVec3("material.specular", 0.3f, 0.3f, 0.3f);
+
+    // --- 7. DYNAMIC B-SPLINE CATWALK ---
+    extern unsigned int cwFloorVAO;
+    extern int cwFloorVertexCount;
+    extern unsigned int cwRailVAO;
+    extern int cwRailVertexCount;
+    extern std::vector<glm::mat4> catwalkStanchions;
+    extern unsigned int cylinderVAO;
+    extern int cylinderVertexCount;
+
+    // Draw Floor
+    glBindVertexArray(cwFloorVAO);
+    glBindTexture(GL_TEXTURE_2D, walkTexture);
+    shader.setMat4("model", glm::mat4(1.0f));
+    glDrawArrays(GL_TRIANGLES, 0, cwFloorVertexCount);
+
+    // Draw Rails
+    glBindVertexArray(cwRailVAO);
+    glBindTexture(GL_TEXTURE_2D, blueTex); 
+    shader.setMat4("model", glm::mat4(1.0f));
+    glDrawArrays(GL_TRIANGLES, 0, cwRailVertexCount);
+
+    // Draw Support Stanchions
+    glBindVertexArray(cylinderVAO);
     glBindTexture(GL_TEXTURE_2D, wallTex);
-    // Back Wall
-    model = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 7.0f, -50.0f));
-    model = glm::scale(model, glm::vec3(100.0f, 16.0f, 0.1f));
-    shader.setMat4("model", model); glDrawArrays(GL_TRIANGLES, 0, 36);
-    // Front Wall
-    model = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 7.0f, 50.0f));
-    model = glm::scale(model, glm::vec3(100.0f, 16.0f, 0.1f));
-    shader.setMat4("model", model); glDrawArrays(GL_TRIANGLES, 0, 36);
-    // Left Wall
-    model = glm::translate(glm::mat4(1.0f), glm::vec3(-50.0f, 7.0f, 0.0f));
-    model = glm::scale(model, glm::vec3(0.1f, 16.0f, 100.0f));
-    shader.setMat4("model", model); glDrawArrays(GL_TRIANGLES, 0, 36);
-    // Right Wall
-    model = glm::translate(glm::mat4(1.0f), glm::vec3(50.0f, 7.0f, 0.0f));
-    model = glm::scale(model, glm::vec3(0.1f, 16.0f, 100.0f));
-    shader.setMat4("model", model); glDrawArrays(GL_TRIANGLES, 0, 36);
+    for (const glm::mat4& sM : catwalkStanchions) {
+        shader.setMat4("model", sM);
+        glDrawArrays(GL_TRIANGLES, 0, cylinderVertexCount);
+    }
+    
+    // Support columns hitting floor
+    glBindVertexArray(VAO);
+    glBindTexture(GL_TEXTURE_2D, wallTex);
+    // Columns under the high flat sections
+    for (float px : {-60.0f, 0.0f, 40.0f}) {
+        glm::mat4 cM = glm::translate(glm::mat4(1.0f), glm::vec3(px, 8.25f, -15.0f));
+        cM = glm::scale(cM, glm::vec3(1.5f, 16.5f, 1.5f));
+        shader.setMat4("model", cM); glDrawArrays(GL_TRIANGLES, 0, 36);
+    }
+    
+    // The Sliding Door  (width=50, height=20, gap from X=-25 to +25)
+    extern float doorYOffset;
+    glBindTexture(GL_TEXTURE_2D, tunnelTex);
+    glm::mat4 doorModel = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 10.0f + doorYOffset, 100.0f));
+    doorModel = glm::scale(doorModel, glm::vec3(50.0f, 20.0f, 1.1f));
+    shader.setMat4("model", doorModel); glDrawArrays(GL_TRIANGLES, 0, 36);
+
+    glBindTexture(GL_TEXTURE_2D, wallTex);
+    // Right Wall, Tiled along Z
+    for (float z = -90.0f; z <= 90.0f; z += 20.0f) {
+        glm::mat4 model = glm::translate(glm::mat4(1.0f), glm::vec3(100.0f, 14.5f, z));
+        model = glm::scale(model, glm::vec3(1.0f, 30.0f, 20.0f));
+        shader.setMat4("model", model); glDrawArrays(GL_TRIANGLES, 0, 36);
+    }
+    
+    // Left Wall, Tiled along Z with structured cutout
+    for (float z = -90.0f; z <= 90.0f; z += 20.0f) {
+        if (abs(z - 10.0f) < 0.1f || abs(z + 10.0f) < 0.1f) {
+            continue; // Skip the z=-10 and z=10 segments (total width 40 around center Z=0)
+        }
+        glm::mat4 model = glm::translate(glm::mat4(1.0f), glm::vec3(-100.0f, 14.5f, z));
+        model = glm::scale(model, glm::vec3(1.0f, 30.0f, 20.0f));
+        shader.setMat4("model", model); glDrawArrays(GL_TRIANGLES, 0, 36);
+    }
+    
+    // Custom Left Wall Frame for Exhaust Fan cutout
+    // We lowered the Fan Center to Y=21. Frame Hole is now Y in [17, 25], Z in [-4, 4]. (Width=8, Height=8) 
+    // Gap filled: Z in [-20, 20]. Width=40.
+
+    // Bottom Block: covers Y from -0.5 to 17. Height = 17.5. Center Y = 8.25
+    glm::mat4 bModel = glm::translate(glm::mat4(1.0f), glm::vec3(-100.0f, 8.25f, 0.0f));
+    bModel = glm::scale(bModel, glm::vec3(1.0f, 17.5f, 40.0f));
+    shader.setMat4("model", bModel); glDrawArrays(GL_TRIANGLES, 0, 36);
+    
+    // Top Block: covers Y from 25 to 29.5. Height = 4.5. Center Y = 27.25. (Ducts at Y=28 pierce flawlessly through this newly added wall seal)
+    glm::mat4 tModel = glm::translate(glm::mat4(1.0f), glm::vec3(-100.0f, 27.25f, 0.0f));
+    tModel = glm::scale(tModel, glm::vec3(1.0f, 4.5f, 40.0f));
+    shader.setMat4("model", tModel); glDrawArrays(GL_TRIANGLES, 0, 36);
+
+    // Left Block: covers Z from -20 to -4. Width = 16. Center Z = -12. Y=21, Height=8.
+    glm::mat4 lModel = glm::translate(glm::mat4(1.0f), glm::vec3(-100.0f, 21.0f, -12.0f));
+    lModel = glm::scale(lModel, glm::vec3(1.0f, 8.0f, 16.0f));
+    shader.setMat4("model", lModel); glDrawArrays(GL_TRIANGLES, 0, 36);
+
+    // Right Block: covers Z from 4 to 20. Width = 16. Center Z = 12. Y=21, Height=8.
+    glm::mat4 rModel = glm::translate(glm::mat4(1.0f), glm::vec3(-100.0f, 21.0f, 12.0f));
+    rModel = glm::scale(rModel, glm::vec3(1.0f, 8.0f, 16.0f));
+    shader.setMat4("model", rModel); glDrawArrays(GL_TRIANGLES, 0, 36);
+    
+    // Render the Exhaust Fan inside the custom cut
+    drawExhaustFan(shader);
+
+    // --- 6. RANDOM MATERIALS STORAGE ---
+    // Storing miscellaneous materials near the Back Wall (Z = -95)
+    for (float x = -80.0f; x <= 80.0f; x += 15.0f) {
+        float heightSeed = abs(sin(x * 12.3f) + cos(x * 4.5f)); // pseudo-random
+        int numStacks = 1 + (int)(heightSeed * 3.0f); // 1 to 4 boxes stacked
+
+        if (numStacks % 2 == 0) {
+            // Draw stacked crates
+            glBindTexture(GL_TEXTURE_2D, boxTex);
+            for (int y = 0; y < numStacks; y++) {
+                glm::mat4 crate = glm::translate(glm::mat4(1.0f), glm::vec3(x, y * 2.0f + 0.3f, -95.0f));
+                crate = glm::rotate(crate, heightSeed, glm::vec3(0,1,0)); // random rotation
+                shader.setMat4("model", glm::scale(crate, glm::vec3(2.0f, 2.0f, 2.0f)));
+                glDrawArrays(GL_TRIANGLES, 0, 36);
+            }
+        } else {
+            // Draw barrels
+            extern unsigned int cylinderVAO;
+            extern int cylinderVertexCount;
+            glBindVertexArray(cylinderVAO);
+            glBindTexture(GL_TEXTURE_2D, conveyorTex);
+            for (int y = 0; y < 2; y++) {
+                for (float zOff = -96.0f; zOff <= -92.0f; zOff += 2.0f) {
+                    glm::mat4 barrel = glm::translate(glm::mat4(1.0f), glm::vec3(x, y * 3.0f + 1.5f, zOff));
+                    shader.setMat4("model", glm::scale(barrel, glm::vec3(1.5f, 3.0f, 1.5f)));
+                    glDrawArrays(GL_TRIANGLES, 0, cylinderVertexCount);
+                }
+            }
+            // re-bind original cube VAO
+            glBindVertexArray(VAO);
+        }
+    }
+
+    // ★ DECORATIVE OVALS ON FLOOR ★ at specified WCS locations
+    extern unsigned int ovalVAO;
+    extern int ovalVertexCount;
+    glBindVertexArray(ovalVAO);
+    glBindTexture(GL_TEXTURE_2D, bakaTexture);
+    
+    // Shape created from provided WCS coordinates - placed near back wall at Z=5.1
+    // Coordinates span from X: -0.8 to -0.7 (approximately), Y: 0.408 to 2.149
+    // This creates an oval/shape near the back wall
+    glm::mat4 bakaShape = glm::translate(glm::mat4(1.0f), glm::vec3(-0.8f, 0.0f, 5.1f));
+    bakaShape = glm::scale(bakaShape, glm::vec3(4.0f, 1.0f, 3.0f));
+    shader.setMat4("model", bakaShape);
+    glDrawArrays(GL_TRIANGLE_FAN, 0, ovalVertexCount);
+    
+    // ★ CONE SHAPE ON FLOOR ★ next to baka shape
+    extern unsigned int coneVAO;
+    extern int coneVertexCount;
+    glBindVertexArray(coneVAO);
+    glBindTexture(GL_TEXTURE_2D, coneTexture);
+    
+    // Cone positioned beside the baka shape
+    glm::mat4 coneShape = glm::translate(glm::mat4(1.0f), glm::vec3(1.2f, 0.0f, 5.1f));
+    coneShape = glm::scale(coneShape, glm::vec3(2.5f, 1.0f, 2.5f));
+    shader.setMat4("model", coneShape);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, coneVertexCount);
+    
+    // 7. DRAW PARTICLES
+    extern std::vector<Particle> sparkParticles;
+    if (!sparkParticles.empty()) {
+        glBindVertexArray(VAO); 
+        glBindTexture(GL_TEXTURE_2D, whiteLightTex); // glowing color
+        shader.setBool("ambientOn", false); 
+        shader.setBool("useTextureColorOnly", true);
+        
+        for (const auto& p : sparkParticles) {
+            glm::mat4 pM = glm::translate(glm::mat4(1.0f), p.position);
+            float scale = 0.15f * (p.life / p.initialLife);
+            pM = glm::scale(pM, glm::vec3(scale));
+            shader.setMat4("model", pM);
+            glDrawArrays(GL_TRIANGLES, 0, 36); // basic cube
+        }
+        shader.setBool("ambientOn", masterLightOn && ambientOn); 
+        shader.setBool("useTextureColorOnly", useTextureColorOnly); 
+    }
+
+    glBindVertexArray(VAO);
 }
 
 void processInput(GLFWwindow* window)
@@ -1222,6 +2536,29 @@ void processInput(GLFWwindow* window)
         if (glfwGetKey(window, GLFW_KEY_F) == GLFW_PRESS) mainCamera.ProcessKeyboard(ROTATE_AROUND, deltaTime);
     }
 
+    // Exhaust Fan Speed Control (Accelerate and Decelerate smartly)
+    extern float exhaustFanSpeed;
+    if (glfwGetKey(window, GLFW_KEY_KP_MULTIPLY) == GLFW_PRESS || 
+       (glfwGetKey(window, GLFW_KEY_8) == GLFW_PRESS && (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS))) {
+        exhaustFanSpeed += 20.0f * deltaTime;
+        if (exhaustFanSpeed > 50.0f) exhaustFanSpeed = 50.0f; // Max velocity cap
+    }
+    if (glfwGetKey(window, GLFW_KEY_KP_DIVIDE) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_SLASH) == GLFW_PRESS) {
+        exhaustFanSpeed -= 20.0f * deltaTime;
+        if (exhaustFanSpeed < -50.0f) exhaustFanSpeed = -50.0f; // Max reverse velocity cap
+    }
+
+    // Conveyor Belt Box Speed Control  (+ to speed up, - to slow down)
+    extern float conveyorSpeed;
+    if (glfwGetKey(window, GLFW_KEY_EQUAL) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_KP_ADD) == GLFW_PRESS) {
+        conveyorSpeed += 5.0f * deltaTime;
+        if (conveyorSpeed > 20.0f) conveyorSpeed = 20.0f;  // cap: boxes don't overshoot collision checks
+    }
+    if (glfwGetKey(window, GLFW_KEY_MINUS) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_KP_SUBTRACT) == GLFW_PRESS) {
+        conveyorSpeed -= 5.0f * deltaTime;
+        if (conveyorSpeed < 0.5f) conveyorSpeed = 0.5f;    // floor: keep boxes crawling, never dead-stopped
+    }
+
     // Toggles logic
 #define DO_TOGGLE(KEY, STATE_VAR, PRESSED_VAR) \
         if (glfwGetKey(window, KEY) == GLFW_PRESS) { \
@@ -1229,17 +2566,18 @@ void processInput(GLFWwindow* window)
         } else { PRESSED_VAR = false; }
 
     DO_TOGGLE(GLFW_KEY_1, dirLightOn, key1_pressed)
-        DO_TOGGLE(GLFW_KEY_2, pointLightOn, key2_pressed)
-        DO_TOGGLE(GLFW_KEY_3, spotLightOn, key3_pressed)
-        DO_TOGGLE(GLFW_KEY_5, ambientOn, key5_pressed)
-        DO_TOGGLE(GLFW_KEY_6, diffuseOn, key6_pressed)
-        DO_TOGGLE(GLFW_KEY_7, specularOn, key7_pressed)
-        DO_TOGGLE(GLFW_KEY_L, masterLightOn, keyL_pressed)
-        DO_TOGGLE(GLFW_KEY_M, mainLightOn, keyM_pressed)
-        DO_TOGGLE(GLFW_KEY_G, fanOn, keyG_pressed)
-        DO_TOGGLE(GLFW_KEY_V, singleViewport, keyV_pressed)
-        DO_TOGGLE(GLFW_KEY_T, useTextureColorOnly, keyT_pressed)
-        DO_TOGGLE(GLFW_KEY_P, usePhong, keyP_pressed)
+    DO_TOGGLE(GLFW_KEY_2, pointLightOn, key2_pressed)
+    DO_TOGGLE(GLFW_KEY_3, spotLightOn, key3_pressed)
+    DO_TOGGLE(GLFW_KEY_5, ambientOn, key5_pressed)
+    DO_TOGGLE(GLFW_KEY_6, diffuseOn, key6_pressed)
+    DO_TOGGLE(GLFW_KEY_7, specularOn, key7_pressed)
+    DO_TOGGLE(GLFW_KEY_L, masterLightOn, keyL_pressed)
+    DO_TOGGLE(GLFW_KEY_M, mainLightOn, keyM_pressed)
+    DO_TOGGLE(GLFW_KEY_G, fanOn, keyG_pressed)
+    DO_TOGGLE(GLFW_KEY_V, singleViewport, keyV_pressed)
+    DO_TOGGLE(GLFW_KEY_T, useTextureColorOnly, keyT_pressed)
+    DO_TOGGLE(GLFW_KEY_P, usePhong, keyP_pressed)
+    DO_TOGGLE(GLFW_KEY_O, doorOpen, keyO_pressed)
 
         // We can leave 8 and 9 as backups if they were already there
         if (glfwGetKey(window, GLFW_KEY_8) == GLFW_PRESS) {
