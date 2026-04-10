@@ -393,6 +393,85 @@ glm::vec3 evaluateBSplineDerivative(float t, const glm::vec3& p0, const glm::vec
     return p0 * d0 + p1 * d1 + p2 * d2 + p3 * d3;
 }
 
+// ─── Helicoid Slide ─────────────────────────────────────────────────────────
+unsigned int helicoidVAO = 0;
+int helicoidVertexCount = 0;
+unsigned int watchTexture = 0;
+
+void buildHelicoidSlide() {
+    // Helicoid parametric surface:
+    //   P(u,v) = ( u*cos(v),  c*v,  u*sin(v) )
+    // where u in [R_inner, R_outer], v in [0, totalAngle]
+    // The model-matrix will translate this to world pos (70, 0, 70).
+
+    const float R_inner    = 0.8f;   // tight inner radius — hugs the central pillar
+    const float R_outer    = 7.8f;   // wider walkable surface
+    const float H_total    = 17.0f;  // height (Y=0 floor -> Y=17 top)
+    const float numTurns   = 6.5f;   // MORE turns = even flatter/more gradual slope
+    const float totalAngle = numTurns * 2.0f * 3.14159265f;
+    const float c          = H_total / totalAngle; // pitch constant
+
+    const int uSeg = 24;  // radial subdivisions
+    const int vSeg = 120; // angular subdivisions — smooth continuous spiral
+
+    std::vector<float> verts;
+    verts.reserve(uSeg * vSeg * 6 * 8 * 2); // 2 sides for solid look
+
+    // Analytic normal of the helicoid:
+    //   dP/du = (  cos(v),     0,   sin(v) )
+    //   dP/dv = ( -u*sin(v),   c,   u*cos(v) )
+    //   N = dP/du x dP/dv = ( -c*sin(v), -u,  c*cos(v) )  — then normalize
+    auto hPoint = [&](float u, float v) -> glm::vec3 {
+        return glm::vec3(u * cosf(v), c * v, u * sinf(v));
+    };
+    auto hNormal = [&](float u, float v) -> glm::vec3 {
+        glm::vec3 n(-c * sinf(v), -u, c * cosf(v));
+        float len = glm::length(n);
+        return (len > 1e-6f) ? n / len : glm::vec3(0,1,0);
+    };
+
+    auto push = [&](float u, float v, bool flip) {
+        glm::vec3 p = hPoint(u, v);
+        glm::vec3 n = hNormal(u, v);
+        if (flip) n = -n;
+        float tu = (u - R_inner) / (R_outer - R_inner);
+        float tv = v / totalAngle;
+        verts.push_back(p.x); verts.push_back(p.y); verts.push_back(p.z);
+        verts.push_back(n.x); verts.push_back(n.y); verts.push_back(n.z);
+        verts.push_back(tu);  verts.push_back(tv);
+    };
+
+    for (int vi = 0; vi < vSeg; vi++) {
+        float v0 = totalAngle * (float)vi       / vSeg;
+        float v1 = totalAngle * (float)(vi + 1) / vSeg;
+        for (int ui = 0; ui < uSeg; ui++) {
+            float u0 = R_inner + (R_outer - R_inner) * (float)ui       / uSeg;
+            float u1 = R_inner + (R_outer - R_inner) * (float)(ui + 1) / uSeg;
+
+            // Top face (normal pointing up/outward)
+            push(u0, v0, false); push(u1, v0, false); push(u0, v1, false);
+            push(u1, v0, false); push(u1, v1, false); push(u0, v1, false);
+            // Bottom face (flipped — so underside is also solid/shaded)
+            push(u0, v0, true);  push(u0, v1, true);  push(u1, v0, true);
+            push(u1, v0, true);  push(u0, v1, true);  push(u1, v1, true);
+        }
+    }
+
+    glGenVertexArrays(1, &helicoidVAO);
+    unsigned int vbo;
+    glGenBuffers(1, &vbo);
+    glBindVertexArray(helicoidVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, verts.size() * sizeof(float), verts.data(), GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
+    glEnableVertexAttribArray(2);
+    helicoidVertexCount = (int)(verts.size() / 8);
+}
+
 unsigned int ductVAO = 0;
 int ductVertexCount = 0;
 unsigned int ductTexture = 0;
@@ -1424,6 +1503,7 @@ int main()
     glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
     glEnableVertexAttribArray(2);
 
+    buildHelicoidSlide();
     buildCatwalkSystem();
     buildDuctworkSystem();
     buildArch();
@@ -1446,7 +1526,8 @@ int main()
     std::string coneTexPath = getResourcePath("texture", "cone.jpg");
     std::string walkTexPath = "walk.jpg";
     std::string ductTexPath = "duct.jpg";
-    std::string fanTexPath = "fan.jpg";
+    std::string fanTexPath  = "fan.jpg";
+    std::string watchTexPath = "watch.jpg";
 
     unsigned int boxTexture = loadTexture(boxTexPath.c_str(), 160, 100, 50); 
     unsigned int walkTexture = loadTexture(walkTexPath.c_str(), 200, 200, 200); 
@@ -1461,8 +1542,9 @@ int main()
     unsigned int doorTexture = loadTexture(doorTexPath.c_str(), 100, 100, 100);
     unsigned int bakaTexture = loadTexture(bakaTexPath.c_str(), 139, 69, 19);
     unsigned int coneTexture = loadTexture(coneTexPath.c_str(), 200, 128, 64);
-    ductTexture = loadTexture(ductTexPath.c_str(), 150, 150, 150);
-    fanTexture = loadTexture(fanTexPath.c_str(), 100, 100, 100);
+    ductTexture  = loadTexture(ductTexPath.c_str(),  150, 150, 150);
+    fanTexture   = loadTexture(fanTexPath.c_str(),   100, 100, 100);
+    watchTexture = loadTexture(watchTexPath.c_str(), 180, 150, 120);
 
     // Define 5 parallel belts — alternating curve direction, R=40, bz from -40 to +40
     for (int b = 0; b < 5; b++) {
@@ -2341,6 +2423,44 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
     // Restore default specular
     shader.setFloat("material.shininess", 32.0f);
     shader.setVec3("material.specular", 0.3f, 0.3f, 0.3f);
+
+    // --- HELICOID SPIRAL SLIDE --- wrapped around a new pillar beside the cone/baka shapes
+    // Cone is at (1.2, 0, 5.1). New pillar placed at (6.0, 0, 5.1) to its right.
+    // Spiral wraps tightly around this pillar from Y=0 (floor) to Y=17 (upper level).
+    {
+        extern unsigned int helicoidVAO;
+        extern int helicoidVertexCount;
+        extern unsigned int watchTexture;
+
+        // Pillar position — matches existing support column style (VAO box, wallTex)
+        glm::vec3 pillarPos(6.0f, 8.25f, 5.1f);   // center Y = half of 16.5 height
+        glm::vec3 slidePos (6.0f, 0.0f,  5.1f);   // helicoid origin at floor
+
+        // 1. DRAW NEW PILLAR — style exactly matches existing support columns
+        glBindVertexArray(VAO);
+        glBindTexture(GL_TEXTURE_2D, wallTex);
+        shader.setVec3("material.diffuse", glm::vec3(0.6f, 0.65f, 0.7f));
+        shader.setFloat("material.shininess", 16.0f);
+        glm::mat4 pillarM = glm::translate(glm::mat4(1.0f), pillarPos);
+        pillarM = glm::scale(pillarM, glm::vec3(1.5f, 16.5f, 1.5f));  // same as catwalk cols
+        shader.setMat4("model", pillarM);
+        glDrawArrays(GL_TRIANGLES, 0, 36);
+
+        // 2. DRAW HELICOID SPIRAL SURFACE around that pillar
+        glBindVertexArray(helicoidVAO);
+        glBindTexture(GL_TEXTURE_2D, watchTexture);
+        shader.setVec3("material.diffuse",   glm::vec3(0.75f, 0.75f, 0.80f));
+        shader.setVec3("material.specular",  glm::vec3(1.0f,  1.0f,  1.0f));
+        shader.setFloat("material.shininess", 96.0f);
+        glm::mat4 slideModel = glm::translate(glm::mat4(1.0f), slidePos);
+        shader.setMat4("model", slideModel);
+        glDrawArrays(GL_TRIANGLES, 0, helicoidVertexCount);
+
+        // Restore defaults
+        shader.setVec3("material.specular",  glm::vec3(0.3f, 0.3f, 0.3f));
+        shader.setFloat("material.shininess", 32.0f);
+        glBindVertexArray(VAO);
+    }
 
     // --- 7. DYNAMIC B-SPLINE CATWALK ---
     extern unsigned int cwFloorVAO;
