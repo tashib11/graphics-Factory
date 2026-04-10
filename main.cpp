@@ -1161,6 +1161,102 @@ void buildOval() {
     glEnableVertexAttribArray(2);
 }
 
+
+unsigned int mengerVAO = 0;
+int mengerVertexCount = 0;
+
+void buildMengerSponge() {
+    float baseCube[] = {
+        -0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  0.0f,  0.0f,
+         0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  1.0f,  0.0f,
+         0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  1.0f,  1.0f,
+         0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  1.0f,  1.0f,
+        -0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  0.0f,  1.0f,
+        -0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  0.0f,  0.0f,
+
+        -0.5f, -0.5f,  0.5f,  0.0f,  0.0f,  1.0f,  0.0f,  0.0f,
+         0.5f, -0.5f,  0.5f,  0.0f,  0.0f,  1.0f,  1.0f,  0.0f,
+         0.5f,  0.5f,  0.5f,  0.0f,  0.0f,  1.0f,  1.0f,  1.0f,
+         0.5f,  0.5f,  0.5f,  0.0f,  0.0f,  1.0f,  1.0f,  1.0f,
+        -0.5f,  0.5f,  0.5f,  0.0f,  0.0f,  1.0f,  0.0f,  1.0f,
+        -0.5f, -0.5f,  0.5f,  0.0f,  0.0f,  1.0f,  0.0f,  0.0f,
+
+        -0.5f,  0.5f,  0.5f, -1.0f,  0.0f,  0.0f,  1.0f,  0.0f,
+        -0.5f,  0.5f, -0.5f, -1.0f,  0.0f,  0.0f,  1.0f,  1.0f,
+        -0.5f, -0.5f, -0.5f, -1.0f,  0.0f,  0.0f,  0.0f,  1.0f,
+        -0.5f, -0.5f, -0.5f, -1.0f,  0.0f,  0.0f,  0.0f,  1.0f,
+        -0.5f, -0.5f,  0.5f, -1.0f,  0.0f,  0.0f,  0.0f,  0.0f,
+        -0.5f,  0.5f,  0.5f, -1.0f,  0.0f,  0.0f,  1.0f,  0.0f,
+
+         0.5f,  0.5f,  0.5f,  1.0f,  0.0f,  0.0f,  1.0f,  0.0f,
+         0.5f,  0.5f, -0.5f,  1.0f,  0.0f,  0.0f,  1.0f,  1.0f,
+         0.5f, -0.5f, -0.5f,  1.0f,  0.0f,  0.0f,  0.0f,  1.0f,
+         0.5f, -0.5f, -0.5f,  1.0f,  0.0f,  0.0f,  0.0f,  1.0f,
+         0.5f, -0.5f,  0.5f,  1.0f,  0.0f,  0.0f,  0.0f,  0.0f,
+         0.5f,  0.5f,  0.5f,  1.0f,  0.0f,  0.0f,  1.0f,  0.0f,
+
+        -0.5f, -0.5f, -0.5f,  0.0f, -1.0f,  0.0f,  0.0f,  1.0f,
+         0.5f, -0.5f, -0.5f,  0.0f, -1.0f,  0.0f,  1.0f,  1.0f,
+         0.5f, -0.5f,  0.5f,  0.0f, -1.0f,  0.0f,  1.0f,  0.0f,
+         0.5f, -0.5f,  0.5f,  0.0f, -1.0f,  0.0f,  1.0f,  0.0f,
+        -0.5f, -0.5f,  0.5f,  0.0f, -1.0f,  0.0f,  0.0f,  0.0f,
+        -0.5f, -0.5f, -0.5f,  0.0f, -1.0f,  0.0f,  0.0f,  1.0f,
+
+        -0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f,  0.0f,  1.0f,
+         0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f,  1.0f,  1.0f,
+         0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,  1.0f,  0.0f,
+         0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,  1.0f,  0.0f,
+        -0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,  0.0f,  0.0f,
+        -0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f,  0.0f,  1.0f
+    };
+
+    std::vector<float> verts;
+
+    auto recurse = [&](auto& self, glm::mat4 model, int depth) -> void {
+        if (depth == 0) {
+            for (int i = 0; i < 36; i++) {
+                glm::vec4 p(baseCube[i * 8], baseCube[i * 8 + 1], baseCube[i * 8 + 2], 1.0f);
+                glm::vec4 n(baseCube[i * 8 + 3], baseCube[i * 8 + 4], baseCube[i * 8 + 5], 0.0f);
+                
+                p = model * p;
+                n = glm::normalize(model * n);
+                
+                verts.push_back(p.x); verts.push_back(p.y); verts.push_back(p.z);
+                verts.push_back(n.x); verts.push_back(n.y); verts.push_back(n.z);
+                verts.push_back(baseCube[i * 8 + 6]); verts.push_back(baseCube[i * 8 + 7]);
+            }
+            return;
+        }
+
+        for (int x = -1; x <= 1; x++) {
+            for (int y = -1; y <= 1; y++) {
+                for (int z = -1; z <= 1; z++) {
+                    if (abs(x) + abs(y) + abs(z) < 2) continue;
+                    glm::mat4 child = glm::translate(model, glm::vec3(x / 3.0f, y / 3.0f, z / 3.0f));
+                    child = glm::scale(child, glm::vec3(1.0f / 3.0f));
+                    self(self, child, depth - 1);
+                }
+            }
+        }
+    };
+
+    recurse(recurse, glm::mat4(1.0f), 3); // Depth 3 => 8000 cubes
+
+    mengerVertexCount = verts.size() / 8;
+    unsigned int vbo;
+    glGenVertexArrays(1, &mengerVAO);
+    glGenBuffers(1, &vbo);
+    glBindVertexArray(mengerVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, verts.size() * sizeof(float), verts.data(), GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
+    glEnableVertexAttribArray(2);
+}
+
 // Massive Central Wall Exhaust Fan utilizing Ruled Surface aerodynamic blades
 void drawExhaustFan(Shader& shader) {
     // Shifted from Y=26.0f to Y=21.0f to strongly separate internal geometry from duct pipeline above
@@ -1512,6 +1608,7 @@ int main()
     buildSphere();
     buildOval();
     buildCone();
+    buildMengerSponge();
 
     std::string boxTexPath = getResourcePath("texture", "box.jpg");
     std::string conveyorTexPath = getResourcePath("texture", "conveyor.jpg");
@@ -2629,6 +2726,34 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
         }
         shader.setBool("ambientOn", masterLightOn && ambientOn); 
         shader.setBool("useTextureColorOnly", useTextureColorOnly); 
+    }
+
+
+
+    // 10. MENGER SPONGE (Automated Modular Storage Racks)
+    {
+        extern unsigned int mengerVAO;
+        extern int mengerVertexCount;
+        
+        glBindVertexArray(mengerVAO);
+        glBindTexture(GL_TEXTURE_2D, wallTex);
+        
+        shader.setVec3("material.diffuse", glm::vec3(0.6f, 0.6f, 0.65f)); // iron gray
+        shader.setFloat("material.shininess", 16.0f);
+        
+        // Massive shelving unit near the back right corner: X=70, Z=-80. Floor is Y=0.
+        // Base is -0.5 to 0.5. Height 30 means it spans Y=-15 to Y=15. Move it up by half height!
+        glm::mat4 spongeModel = glm::translate(glm::mat4(1.0f), glm::vec3(70.0f, 15.0f, -80.0f));
+        spongeModel = glm::scale(spongeModel, glm::vec3(30.0f, 30.0f, 15.0f)); 
+        
+        shader.setMat4("model", spongeModel);
+        glDrawArrays(GL_TRIANGLES, 0, mengerVertexCount);
+
+        // Also place another one on the left side
+        glm::mat4 spongeModel2 = glm::translate(glm::mat4(1.0f), glm::vec3(-70.0f, 15.0f, -50.0f));
+        spongeModel2 = glm::scale(spongeModel2, glm::vec3(30.0f, 30.0f, 15.0f)); 
+        shader.setMat4("model", spongeModel2);
+        glDrawArrays(GL_TRIANGLES, 0, mengerVertexCount);
     }
 
     glBindVertexArray(VAO);
