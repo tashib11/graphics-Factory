@@ -2025,7 +2025,7 @@ int main()
         glfwGetFramebufferSize(window, &width, &height);
 
         float aspect = singleViewport ? (float)width / (float)height : (float)(width / 2) / (float)(height / 2);
-        glm::mat4 projection = customPerspective(glm::radians(45.0f), aspect, 0.1f, 500.0f);
+        glm::mat4 projection = customPerspective(glm::radians(45.0f), aspect, 0.1f, 1000.0f);
 
         if (singleViewport) {
             glViewport(0, 0, width, height);
@@ -2813,53 +2813,102 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
         glDrawArrays(GL_TRIANGLES, 0, mengerVertexCount);
     }
 
-    // --- OUTDOOR ENVIRONMENT ---
+    // ═══════════════════════════════════════════════════════════════
+    //   OUTDOOR ENVIRONMENT  —  street, grass (all 4 sides), sky
+    // ═══════════════════════════════════════════════════════════════
     extern unsigned int streetTexture, grassTexture, skyTexture;
     extern bool useTextureColorOnly;
 
     glBindVertexArray(VAO);
     glActiveTexture(GL_TEXTURE0);
 
-    // 1. STREET — extends from door (Z=100) outward to Z=400, 50-unit wide (matches door gap)
+    // Ground tiles use identical Y / scale as the indoor floor so they
+    // sit flush at the building walls with zero gaps.
+    const float GY = -0.7f;   // same centre-Y as indoor floor
+    const float GH =  0.1f;   // same height scale
+
+    // ── 1. STREET ──────────────────────────────────────────────────
+    // 50-unit wide corridor (X: -25 → +25) aligned with the front
+    // door gap, extending from Z=100 outward to Z=400.
+    // Two 25-wide tiles per row tile the corridor exactly.
     glBindTexture(GL_TEXTURE_2D, streetTexture);
-    shader.setVec3("objectColor", glm::vec3(0.3f, 0.3f, 0.3f));
+    shader.setVec3("objectColor", glm::vec3(0.35f, 0.35f, 0.35f));
     for (float z = 110.0f; z <= 390.0f; z += 20.0f) {
-        for (float x = -12.5f; x <= 12.5f; x += 25.0f) {
-            glm::mat4 rModel = glm::translate(glm::mat4(1.0f), glm::vec3(x, -0.68f, z));
-            rModel = glm::scale(rModel, glm::vec3(25.0f, 0.1f, 20.0f));
-            shader.setMat4("model", rModel);
+        for (float x : {-12.5f, 12.5f}) {   // covers X –25..+25
+            glm::mat4 m = glm::translate(glm::mat4(1.0f), glm::vec3(x, GY, z));
+            m = glm::scale(m, glm::vec3(25.0f, GH, 20.0f));
+            shader.setMat4("model", m);
             glDrawArrays(GL_TRIANGLES, 0, 36);
         }
     }
 
-    // 2. GRASS — left and right of street, same Z range
+    // ── 2. GRASS — wraps all 4 sides of the 200×200 building ───────
     glBindTexture(GL_TEXTURE_2D, grassTexture);
-    shader.setVec3("objectColor", glm::vec3(0.2f, 0.6f, 0.2f));
-    for (float z = 110.0f; z <= 390.0f; z += 20.0f) {
-        // Left side
-        for (float x = -285.0f; x <= -25.0f; x += 20.0f) {
-            glm::mat4 gModel = glm::translate(glm::mat4(1.0f), glm::vec3(x, -0.69f, z));
-            gModel = glm::scale(gModel, glm::vec3(20.0f, 0.1f, 20.0f));
-            shader.setMat4("model", gModel);
-            glDrawArrays(GL_TRIANGLES, 0, 36);
-        }
-        // Right side
-        for (float x = 35.0f; x <= 300.0f; x += 20.0f) {
-            glm::mat4 gModel = glm::translate(glm::mat4(1.0f), glm::vec3(x, -0.69f, z));
-            gModel = glm::scale(gModel, glm::vec3(20.0f, 0.1f, 20.0f));
-            shader.setMat4("model", gModel);
-            glDrawArrays(GL_TRIANGLES, 0, 36);
-        }
-    }
+    shader.setVec3("objectColor", glm::vec3(0.25f, 0.60f, 0.25f));
 
-    // 3. SKY — massive inverted cube centered on world origin, drawn last with no depth writes
+    // FRONT-LEFT  (X: -25 → -400,  Z: 100 → 400)
+    // Tile at X=-35 has its right edge at X=-25, butting up against the street.
+    for (float z = 110.0f; z <= 390.0f; z += 20.0f)
+        for (float x = -35.0f; x >= -395.0f; x -= 20.0f) {
+            glm::mat4 m = glm::translate(glm::mat4(1.0f), glm::vec3(x, GY, z));
+            m = glm::scale(m, glm::vec3(20.0f, GH, 20.0f));
+            shader.setMat4("model", m);
+            glDrawArrays(GL_TRIANGLES, 0, 36);
+        }
+
+    // FRONT-RIGHT  (X: 25 → 400,  Z: 100 → 400)
+    // Tile at X=35 has its left edge at X=25.
+    for (float z = 110.0f; z <= 390.0f; z += 20.0f)
+        for (float x = 35.0f; x <= 395.0f; x += 20.0f) {
+            glm::mat4 m = glm::translate(glm::mat4(1.0f), glm::vec3(x, GY, z));
+            m = glm::scale(m, glm::vec3(20.0f, GH, 20.0f));
+            shader.setMat4("model", m);
+            glDrawArrays(GL_TRIANGLES, 0, 36);
+        }
+
+    // BACK ZONE  (full width X: -400 → 400,  Z: -100 → -400)
+    // Tile at Z=-110 has its upper  edge at Z=-100 (back wall).
+    for (float z = -110.0f; z >= -390.0f; z -= 20.0f)
+        for (float x = -390.0f; x <= 390.0f; x += 20.0f) {
+            glm::mat4 m = glm::translate(glm::mat4(1.0f), glm::vec3(x, GY, z));
+            m = glm::scale(m, glm::vec3(20.0f, GH, 20.0f));
+            shader.setMat4("model", m);
+            glDrawArrays(GL_TRIANGLES, 0, 36);
+        }
+
+    // LEFT SIDE  (X: -100 → -400,  Z: -100 → 100)
+    // Tile at X=-110 has its right edge at X=-100 (left wall).
+    // Z range matches indoor floor tiles so they meet seamlessly.
+    for (float x = -110.0f; x >= -390.0f; x -= 20.0f)
+        for (float z = -90.0f; z <= 90.0f; z += 20.0f) {
+            glm::mat4 m = glm::translate(glm::mat4(1.0f), glm::vec3(x, GY, z));
+            m = glm::scale(m, glm::vec3(20.0f, GH, 20.0f));
+            shader.setMat4("model", m);
+            glDrawArrays(GL_TRIANGLES, 0, 36);
+        }
+
+    // RIGHT SIDE  (X: 100 → 400,  Z: -100 → 100)
+    // Tile at X=110 has its left edge at X=100 (right wall).
+    for (float x = 110.0f; x <= 390.0f; x += 20.0f)
+        for (float z = -90.0f; z <= 90.0f; z += 20.0f) {
+            glm::mat4 m = glm::translate(glm::mat4(1.0f), glm::vec3(x, GY, z));
+            m = glm::scale(m, glm::vec3(20.0f, GH, 20.0f));
+            shader.setMat4("model", m);
+            glDrawArrays(GL_TRIANGLES, 0, 36);
+        }
+
+    // ── 3. SKY ─────────────────────────────────────────────────────
+    // Inverted cube tracked to the camera position so it is always
+    // centred on the viewer and never clipped by the far plane.
+    // Scale 1800 → faces at ±900 from camera, well within zFar=1000.
+    // Drawn last with depth-write OFF so it fills background pixels only.
     glDepthMask(GL_FALSE);
-    glFrontFace(GL_CW);
+    glFrontFace(GL_CW);   // invert winding so we see the inside faces
     glBindTexture(GL_TEXTURE_2D, skyTexture);
-    shader.setVec3("objectColor", glm::vec3(0.5f, 0.7f, 1.0f));
+    shader.setVec3("objectColor", glm::vec3(0.53f, 0.81f, 0.98f));
     shader.setBool("useTextureColorOnly", true);
-    glm::mat4 skyModel = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, 0.0f));
-    skyModel = glm::scale(skyModel, glm::vec3(3000.0f, 3000.0f, 3000.0f));
+    glm::mat4 skyModel = glm::translate(glm::mat4(1.0f), camPos);  // follow camera
+    skyModel = glm::scale(skyModel, glm::vec3(1800.0f, 1800.0f, 1800.0f));
     shader.setMat4("model", skyModel);
     glDrawArrays(GL_TRIANGLES, 0, 36);
     shader.setBool("useTextureColorOnly", useTextureColorOnly);
