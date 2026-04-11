@@ -397,6 +397,45 @@ glm::vec3 evaluateBSplineDerivative(float t, const glm::vec3& p0, const glm::vec
 unsigned int helicoidVAO = 0;
 int helicoidVertexCount = 0;
 unsigned int watchTexture = 0;
+unsigned int fracTexture = 0;
+
+void drawFractalPillar(Shader& shader, glm::mat4 baseModel, int depth, float length, float thickness, float angleDeg, float phaseAngle = 0.0f) {
+    if (depth <= 0) return;
+
+    // Draw trunk
+    glm::mat4 segModel = glm::translate(baseModel, glm::vec3(0.0f, length * 0.5f, 0.0f));
+    segModel = glm::scale(segModel, glm::vec3(thickness, length, thickness));
+    shader.setMat4("model", segModel);
+    glDrawArrays(GL_TRIANGLES, 0, 36);
+
+    glm::mat4 tipModel = glm::translate(baseModel, glm::vec3(0.0f, length, 0.0f));
+
+    if (depth == 3) { 
+        // FIRST SPLIT: Creates the macro 'Y' shape. 2 massive branches.
+        float newLength = 6.33f; // Strictly calibrated for perfectly symmetric 25-deg double split!
+        float newThickness = thickness * 0.75f;
+        float splitAngle = 25.0f; 
+
+        glm::mat4 leftM = glm::rotate(tipModel, glm::radians(splitAngle), glm::vec3(0, 0, 1));
+        drawFractalPillar(shader, leftM, depth - 1, newLength, newThickness, splitAngle, 0.0f);
+        
+        glm::mat4 rightM = glm::rotate(tipModel, glm::radians(-splitAngle), glm::vec3(0, 0, 1));
+        drawFractalPillar(shader, rightM, depth - 1, newLength, newThickness, splitAngle, 0.0f);
+    } else {
+        // SECOND SPLIT: Splitting perpendicularly guarantees BOTH sub-branches achieve the exact same Y-height!
+        float newLength = length * 0.6f;
+        float newThickness = thickness * 0.7f;
+        
+        // twist 90 degrees around local Y to split OUTWARD spanning symmetrically like a 4-point claw
+        glm::mat4 twistedM = glm::rotate(tipModel, glm::radians(90.0f), glm::vec3(0, 1, 0));
+        
+        glm::mat4 leftM = glm::rotate(twistedM, glm::radians(angleDeg), glm::vec3(0, 0, 1));
+        drawFractalPillar(shader, leftM, depth - 1, newLength, newThickness, angleDeg, 0.0f);
+        
+        glm::mat4 rightM = glm::rotate(twistedM, glm::radians(-angleDeg), glm::vec3(0, 0, 1));
+        drawFractalPillar(shader, rightM, depth - 1, newLength, newThickness, angleDeg, 0.0f);
+    }
+}
 
 void buildHelicoidSlide() {
     // Helicoid parametric surface:
@@ -406,8 +445,8 @@ void buildHelicoidSlide() {
 
     const float R_inner    = 0.8f;   // tight inner radius — hugs the central pillar
     const float R_outer    = 7.8f;   // wider walkable surface
-    const float H_total    = 17.0f;  // height (Y=0 floor -> Y=17 top)
-    const float numTurns   = 6.5f;   // MORE turns = even flatter/more gradual slope
+    const float H_total    = 21.0f;  // height (Y=0 floor -> Y=21 top) for taller walkable slope
+    const float numTurns   = 4.0f;   // FEWER turns = significantly larger pitch for pedestrian clearance
     const float totalAngle = numTurns * 2.0f * 3.14159265f;
     const float c          = H_total / totalAngle; // pitch constant
 
@@ -1642,6 +1681,9 @@ int main()
     ductTexture  = loadTexture(ductTexPath.c_str(),  150, 150, 150);
     fanTexture   = loadTexture(fanTexPath.c_str(),   100, 100, 100);
     watchTexture = loadTexture(watchTexPath.c_str(), 180, 150, 120);
+    
+    std::string fracTexPath = "frac.jpg";
+    fracTexture = loadTexture(fracTexPath.c_str(), 150, 150, 150);
 
     // Define 5 parallel belts — alternating curve direction, R=40, bz from -40 to +40
     for (int b = 0; b < 5; b++) {
@@ -2521,27 +2563,27 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
     shader.setFloat("material.shininess", 32.0f);
     shader.setVec3("material.specular", 0.3f, 0.3f, 0.3f);
 
-    // --- HELICOID SPIRAL SLIDE --- wrapped around a new pillar beside the cone/baka shapes
-    // Cone is at (1.2, 0, 5.1). New pillar placed at (6.0, 0, 5.1) to its right.
-    // Spiral wraps tightly around this pillar from Y=0 (floor) to Y=17 (upper level).
+    // --- HELICOID SPIRAL SLIDE --- wrapped around a new pillar in the gap between conveyor belts
+    // Re-positioned to X=0.0, Z=20.0, perfectly spaced between Z=0 and Z=40 belts to avoid collisions.
+    // Spiral wraps tightly around this pillar from Y=0 (floor) to Y=21 (upper level).
     {
         extern unsigned int helicoidVAO;
         extern int helicoidVertexCount;
         extern unsigned int watchTexture;
 
-        // Pillar position — matches existing support column style (VAO box, wallTex)
-        glm::vec3 pillarPos(6.0f, 8.25f, 5.1f);   // center Y = half of 16.5 height
-        glm::vec3 slidePos (6.0f, 0.0f,  5.1f);   // helicoid origin at floor
+        // Helicoid and fractal pillar positioned perfectly in the spacious gap
+        glm::vec3 placementPos(0.0f, 0.0f, 20.0f); // Center gap
+        glm::vec3 slidePos = placementPos;         // helicoid origin at floor
 
-        // 1. DRAW NEW PILLAR — style exactly matches existing support columns
+        // 1. DRAW NEW PILLAR
         glBindVertexArray(VAO);
-        glBindTexture(GL_TEXTURE_2D, wallTex);
-        shader.setVec3("material.diffuse", glm::vec3(0.6f, 0.65f, 0.7f));
+        glBindTexture(GL_TEXTURE_2D, fracTexture);
+        shader.setVec3("material.diffuse", glm::vec3(0.85f, 0.85f, 0.9f)); // Slightly brighter to pop out
         shader.setFloat("material.shininess", 16.0f);
-        glm::mat4 pillarM = glm::translate(glm::mat4(1.0f), pillarPos);
-        pillarM = glm::scale(pillarM, glm::vec3(1.5f, 16.5f, 1.5f));  // same as catwalk cols
-        shader.setMat4("model", pillarM);
-        glDrawArrays(GL_TRIANGLES, 0, 36);
+        
+        // Base of the pillar starts strictly at Y=0 so slide wraps correctly 0->21
+        glm::mat4 baseM = glm::translate(glm::mat4(1.0f), placementPos);
+        drawFractalPillar(shader, baseM, 3, 21.0f, 1.5f, 32.0f, 0.0f); // depth 3 for clean strict Y canopy
 
         // 2. DRAW HELICOID SPIRAL SURFACE around that pillar
         glBindVertexArray(helicoidVAO);
