@@ -49,6 +49,7 @@ bool specularOn = true;
 bool masterLightOn = true;
 bool mainLightOn = true;
 bool usePhong = true;
+bool p_override_light = false;
 bool fanOn = false;
 bool singleViewport = false;
 bool useTextureColorOnly = false;
@@ -511,6 +512,9 @@ void buildHelicoidSlide() {
 unsigned int ductVAO = 0;
 int ductVertexCount = 0;
 unsigned int ductTexture = 0;
+unsigned int streetTexture = 0;
+unsigned int grassTexture = 0;
+unsigned int skyTexture = 0;
 
 void buildDuctworkSystem() {
     std::vector<float> ductVerts;
@@ -1682,6 +1686,13 @@ int main()
     std::string fracTexPath = "frac.jpg";
     fracTexture = loadTexture(fracTexPath.c_str(), 150, 150, 150);
 
+    std::string streetTexPath = getResourcePath("texture", "street.jpg");
+    std::string grassTexPath  = getResourcePath("texture", "grass.jpg");
+    std::string skyTexPath    = getResourcePath("texture", "sky.jpg");
+    streetTexture = loadTexture(streetTexPath.c_str(), 80,  80,  85);
+    grassTexture  = loadTexture(grassTexPath.c_str(),  50, 160,  60);
+    skyTexture    = loadTexture(skyTexPath.c_str(),   135, 206, 235);
+
     // Define 5 parallel belts — alternating curve direction, R=40, bz from -40 to +40
     for (int b = 0; b < 5; b++) {
         globalPaths[b].clear();
@@ -2064,12 +2075,13 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
     shader.setInt("material.specular", 0); // use diffuse map for specular as well for simplicity
     shader.setFloat("material.shininess", 32.0f);
 
-    shader.setBool("ambientOn", ambientOn);
-    shader.setBool("diffuseOn", masterLightOn && diffuseOn);
-    shader.setBool("specularOn", masterLightOn && specularOn);
+    bool effLight = masterLightOn || p_override_light;
+    shader.setBool("ambientOn", effLight && ambientOn);
+    shader.setBool("diffuseOn", effLight && diffuseOn);
+    shader.setBool("specularOn", effLight && specularOn);
     shader.setBool("dirLightOn", masterLightOn && dirLightOn);
-    shader.setBool("pointLightOn", masterLightOn && pointLightOn);
-    shader.setBool("spotLightOn", masterLightOn && spotLightOn);
+    shader.setBool("pointLightOn", effLight && pointLightOn);
+    shader.setBool("spotLightOn", effLight && spotLightOn);
 
     // Setup Directional Light (overhead sky — moderate, not blinding)
     shader.setVec3("dirLight.direction", 0.0f, -1.0f, 0.0f);
@@ -2801,6 +2813,59 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
         glDrawArrays(GL_TRIANGLES, 0, mengerVertexCount);
     }
 
+    // --- OUTDOOR ENVIRONMENT ---
+    extern unsigned int streetTexture, grassTexture, skyTexture;
+    extern bool useTextureColorOnly;
+
+    glBindVertexArray(VAO);
+    glActiveTexture(GL_TEXTURE0);
+
+    // 1. STREET — extends from door (Z=100) outward to Z=400, 50-unit wide (matches door gap)
+    glBindTexture(GL_TEXTURE_2D, streetTexture);
+    shader.setVec3("objectColor", glm::vec3(0.3f, 0.3f, 0.3f));
+    for (float z = 110.0f; z <= 390.0f; z += 20.0f) {
+        for (float x = -12.5f; x <= 12.5f; x += 25.0f) {
+            glm::mat4 rModel = glm::translate(glm::mat4(1.0f), glm::vec3(x, -0.68f, z));
+            rModel = glm::scale(rModel, glm::vec3(25.0f, 0.1f, 20.0f));
+            shader.setMat4("model", rModel);
+            glDrawArrays(GL_TRIANGLES, 0, 36);
+        }
+    }
+
+    // 2. GRASS — left and right of street, same Z range
+    glBindTexture(GL_TEXTURE_2D, grassTexture);
+    shader.setVec3("objectColor", glm::vec3(0.2f, 0.6f, 0.2f));
+    for (float z = 110.0f; z <= 390.0f; z += 20.0f) {
+        // Left side
+        for (float x = -285.0f; x <= -25.0f; x += 20.0f) {
+            glm::mat4 gModel = glm::translate(glm::mat4(1.0f), glm::vec3(x, -0.69f, z));
+            gModel = glm::scale(gModel, glm::vec3(20.0f, 0.1f, 20.0f));
+            shader.setMat4("model", gModel);
+            glDrawArrays(GL_TRIANGLES, 0, 36);
+        }
+        // Right side
+        for (float x = 35.0f; x <= 300.0f; x += 20.0f) {
+            glm::mat4 gModel = glm::translate(glm::mat4(1.0f), glm::vec3(x, -0.69f, z));
+            gModel = glm::scale(gModel, glm::vec3(20.0f, 0.1f, 20.0f));
+            shader.setMat4("model", gModel);
+            glDrawArrays(GL_TRIANGLES, 0, 36);
+        }
+    }
+
+    // 3. SKY — massive inverted cube centered on world origin, drawn last with no depth writes
+    glDepthMask(GL_FALSE);
+    glFrontFace(GL_CW);
+    glBindTexture(GL_TEXTURE_2D, skyTexture);
+    shader.setVec3("objectColor", glm::vec3(0.5f, 0.7f, 1.0f));
+    shader.setBool("useTextureColorOnly", true);
+    glm::mat4 skyModel = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, 0.0f));
+    skyModel = glm::scale(skyModel, glm::vec3(3000.0f, 3000.0f, 3000.0f));
+    shader.setMat4("model", skyModel);
+    glDrawArrays(GL_TRIANGLES, 0, 36);
+    shader.setBool("useTextureColorOnly", useTextureColorOnly);
+    glFrontFace(GL_CCW);
+    glDepthMask(GL_TRUE);
+
     glBindVertexArray(VAO);
 }
 
@@ -2861,7 +2926,14 @@ void processInput(GLFWwindow* window)
     DO_TOGGLE(GLFW_KEY_5, ambientOn, key5_pressed)
     DO_TOGGLE(GLFW_KEY_6, diffuseOn, key6_pressed)
     DO_TOGGLE(GLFW_KEY_7, specularOn, key7_pressed)
-    DO_TOGGLE(GLFW_KEY_L, masterLightOn, keyL_pressed)
+    // L key: Master light toggle — also resets P override so darkness is pure
+    if (glfwGetKey(window, GLFW_KEY_L) == GLFW_PRESS) {
+        if (!keyL_pressed) {
+            masterLightOn = !masterLightOn;
+            p_override_light = false; // Reset so scene goes fully dark
+            keyL_pressed = true;
+        }
+    } else { keyL_pressed = false; }
     DO_TOGGLE(GLFW_KEY_M, mainLightOn, keyM_pressed)
     DO_TOGGLE(GLFW_KEY_G, fanOn, keyG_pressed)
     DO_TOGGLE(GLFW_KEY_V, singleViewport, keyV_pressed)
@@ -2883,12 +2955,14 @@ void processInput(GLFWwindow* window)
         }
     } else { keyR_pressed = false; }
 
-    // P key: Blended Shading Mode (Texture ON, Surface Lighting ON, toggle Gouraud/Phong)
+    // P key: Toggle Gouraud/Phong. Also enables ambient light override so
+    //         vertex/fragment shading is visible even when master light is OFF.
     if (glfwGetKey(window, GLFW_KEY_P) == GLFW_PRESS) {
         if (!keyP_pressed) {
             usePhong = !usePhong;
-            useTextureColorOnly = false; // Force blending to be visible
-            textureOn = true;            // Force blending to be visible
+            useTextureColorOnly = false; // Show blended result, not texture-only
+            textureOn = true;            // Ensure texture is part of the blend
+            if (!masterLightOn) p_override_light = true; // Allow dim ambient when dark
             keyP_pressed = true;
         }
     } else { keyP_pressed = false; }
