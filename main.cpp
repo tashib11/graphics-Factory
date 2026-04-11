@@ -23,7 +23,11 @@ const unsigned int SCR_WIDTH = 1900;
 const unsigned int SCR_HEIGHT =950;
 
 // cameras for 4 viewports
-Camera mainCamera(glm::vec3(0.0f, 5.0f, 15.0f));
+// Start outside the building, centred on the door gap (X=0),
+// 120 units in front of the front wall (Z=100), at eye height Y=10.
+// Yaw=-90 points in the -Z direction (straight at the door).
+// Pitch=-5 gives a slight downward tilt so the entrance is well-framed.
+Camera mainCamera(glm::vec3(0.0f, 10.0f, 220.0f), glm::vec3(0.0f, 1.0f, 0.0f), -90.0f, -5.0f);
 Camera birdEyeCamera(glm::vec3(0.0f, 20.0f, 0.1f));
 Camera followCamera(glm::vec3(0.0f, 5.0f, 15.0f));
 Camera frontCamera(glm::vec3(0.0f, 2.0f, 10.0f));
