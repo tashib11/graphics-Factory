@@ -52,6 +52,8 @@ bool usePhong = true;
 bool fanOn = false;
 bool singleViewport = false;
 bool useTextureColorOnly = false;
+bool textureOn = true;
+bool keyR_pressed = false;
 
 // Debounce state
 bool key1_pressed = false, key2_pressed = false, key3_pressed = false;
@@ -402,39 +404,34 @@ unsigned int fracTexture = 0;
 void drawFractalPillar(Shader& shader, glm::mat4 baseModel, int depth, float length, float thickness, float angleDeg, float phaseAngle = 0.0f) {
     if (depth <= 0) return;
 
-    // Draw trunk
+    // Draw the trunk for this iteration
     glm::mat4 segModel = glm::translate(baseModel, glm::vec3(0.0f, length * 0.5f, 0.0f));
     segModel = glm::scale(segModel, glm::vec3(thickness, length, thickness));
     shader.setMat4("model", segModel);
     glDrawArrays(GL_TRIANGLES, 0, 36);
 
+    // Tip of this trunk
     glm::mat4 tipModel = glm::translate(baseModel, glm::vec3(0.0f, length, 0.0f));
 
-    if (depth == 3) { 
-        // FIRST SPLIT: Creates the macro 'Y' shape. 2 massive branches.
-        float newLength = 6.33f; // Strictly calibrated for perfectly symmetric 25-deg double split!
-        float newThickness = thickness * 0.75f;
-        float splitAngle = 25.0f; 
-
-        glm::mat4 leftM = glm::rotate(tipModel, glm::radians(splitAngle), glm::vec3(0, 0, 1));
-        drawFractalPillar(shader, leftM, depth - 1, newLength, newThickness, splitAngle, 0.0f);
-        
-        glm::mat4 rightM = glm::rotate(tipModel, glm::radians(-splitAngle), glm::vec3(0, 0, 1));
-        drawFractalPillar(shader, rightM, depth - 1, newLength, newThickness, splitAngle, 0.0f);
-    } else {
-        // SECOND SPLIT: Splitting perpendicularly guarantees BOTH sub-branches achieve the exact same Y-height!
-        float newLength = length * 0.6f;
-        float newThickness = thickness * 0.7f;
-        
-        // twist 90 degrees around local Y to split OUTWARD spanning symmetrically like a 4-point claw
-        glm::mat4 twistedM = glm::rotate(tipModel, glm::radians(90.0f), glm::vec3(0, 1, 0));
-        
-        glm::mat4 leftM = glm::rotate(twistedM, glm::radians(angleDeg), glm::vec3(0, 0, 1));
-        drawFractalPillar(shader, leftM, depth - 1, newLength, newThickness, angleDeg, 0.0f);
-        
-        glm::mat4 rightM = glm::rotate(twistedM, glm::radians(-angleDeg), glm::vec3(0, 0, 1));
-        drawFractalPillar(shader, rightM, depth - 1, newLength, newThickness, angleDeg, 0.0f);
-    }
+    // For the next branches, shrink thickness
+    float newThickness = thickness * 0.7f;
+    
+    // Left branch
+    glm::mat4 leftM = glm::rotate(tipModel, glm::radians(angleDeg), glm::vec3(cos(phaseAngle), 0.0f, sin(phaseAngle)));
+    float leftLen = length * 0.65f;
+    // Mathematically constrain exactly 2 splits to reach the 30.0 ceiling perfectly
+    if (depth == 3) leftLen = 5.5f; // Calibrate middle branch length visually
+    if (depth == 2 && leftM[1][1] > 0.01f) leftLen = (30.0f - leftM[3][1]) / leftM[1][1]; // Snap final branch precisely to Y=30.0
+    
+    drawFractalPillar(shader, leftM, depth - 1, leftLen, newThickness, angleDeg * 0.95f, phaseAngle + 1.57f);
+    
+    // Right branch
+    glm::mat4 rightM = glm::rotate(tipModel, glm::radians(-angleDeg), glm::vec3(cos(phaseAngle), 0.0f, sin(phaseAngle)));
+    float rightLen = length * 0.65f;
+    if (depth == 3) rightLen = 5.5f;
+    if (depth == 2 && rightM[1][1] > 0.01f) rightLen = (30.0f - rightM[3][1]) / rightM[1][1];
+    
+    drawFractalPillar(shader, rightM, depth - 1, rightLen, newThickness, angleDeg * 0.95f, phaseAngle + 1.57f);
 }
 
 void buildHelicoidSlide() {
@@ -1302,7 +1299,7 @@ void drawExhaustFan(Shader& shader) {
     glm::vec3 fanCenter(-100.0f, 21.0f, 0.0f);
     
     // Ensure appropriate darkness for heavy industrial metal
-    shader.setVec3("material.diffuse", glm::vec3(0.5f, 0.5f, 0.5f));
+    shader.setVec3("objectColor", glm::vec3(0.5f, 0.5f, 0.5f));
     shader.setFloat("material.shininess", 32.0f);
     
     extern unsigned int fanTexture;
@@ -1353,7 +1350,7 @@ void drawPaintChamber(Shader& shader, unsigned int cubeVAO, int pathIndex, float
     tunnel = glm::rotate(tunnel, angle, glm::vec3(0.0f, 1.0f, 0.0f));
     
     // Ambient glowing neon strips inside Chamber
-    shader.setVec3("material.diffuse", glm::vec3(1.0f, 1.0f, 1.0f));
+    shader.setVec3("objectColor", glm::vec3(1.0f, 1.0f, 1.0f));
     shader.setFloat("material.shininess", 16.0f);
 
     // Scale: Radius=1.5f (width 3.0f to cover 2.9f rails), Length=6.0f
@@ -2060,13 +2057,14 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
 
     // Pass texture fallback info
     shader.setBool("useTextureColorOnly", useTextureColorOnly);
+    shader.setBool("textureOn", textureOn);
 
     // Explicitly set material uniforms
     shader.setInt("material.diffuse", 0);
     shader.setInt("material.specular", 0); // use diffuse map for specular as well for simplicity
     shader.setFloat("material.shininess", 32.0f);
 
-    shader.setBool("ambientOn", masterLightOn && ambientOn);
+    shader.setBool("ambientOn", ambientOn);
     shader.setBool("diffuseOn", masterLightOn && diffuseOn);
     shader.setBool("specularOn", masterLightOn && specularOn);
     shader.setBool("dirLightOn", masterLightOn && dirLightOn);
@@ -2131,7 +2129,7 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
     glActiveTexture(GL_TEXTURE0);
 
     // 1. DRAW SPRAWLING CONVEYOR GRID NETWORK
-    glBindTexture(GL_TEXTURE_2D, conveyorTex);
+    glBindTexture(GL_TEXTURE_2D, conveyorTex); shader.setVec3("objectColor", glm::vec3(0.4f, 0.4f, 0.4f));
     extern std::vector<PathSegment> globalPaths[5];
     for (int b = 0; b < 5; b++) {
     for (size_t i = 0; i < globalPaths[b].size(); i++) {
@@ -2149,13 +2147,13 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
             // Side rails removed for open start/end
 
             // Flat rigid bed to connect with the rest of the belt curve
-            glBindTexture(GL_TEXTURE_2D, conveyorTex);
+            glBindTexture(GL_TEXTURE_2D, conveyorTex); shader.setVec3("objectColor", glm::vec3(0.4f, 0.4f, 0.4f));
             glm::mat4 bedM = glm::translate(model, glm::vec3(0.0f, 0.0f, 0.0f));
             shader.setMat4("model", glm::scale(bedM, glm::vec3(2.8f, 0.2f, len)));
             glDrawArrays(GL_TRIANGLES, 0, 36);
 
             // Animated slats — thin boxes sliding along belt direction
-            glBindTexture(GL_TEXTURE_2D, conveyorTex);
+            glBindTexture(GL_TEXTURE_2D, conveyorTex); shader.setVec3("objectColor", glm::vec3(0.4f, 0.4f, 0.4f));
             {
                 float beltSpeed  = (i == 0 || i == globalPaths[b].size() - 1) ? 0.0f : 3.0f;        // units / sec
                 float slatSpacing = 0.55f;       // gap between slat centres
@@ -2188,7 +2186,7 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
             }
 
             // Legs
-            glBindTexture(GL_TEXTURE_2D, wallTex);
+            glBindTexture(GL_TEXTURE_2D, wallTex); shader.setVec3("objectColor", glm::vec3(0.6f, 0.6f, 0.65f));
             int numLegs = (int)(len / 4.0f);
             for (int j = 0; j <= numLegs; j++) {
                 float dist = j * 4.0f - len / 2.0f;
@@ -2206,7 +2204,7 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
             // Spinning Rollers removed completely
         } else {
             // CURVE: render as many small boxes approximating the curve with scrolling animation
-            glBindTexture(GL_TEXTURE_2D, conveyorTex);
+            glBindTexture(GL_TEXTURE_2D, conveyorTex); shader.setVec3("objectColor", glm::vec3(0.4f, 0.4f, 0.4f));
             
             // Belt scrolling for curves
             float beltSpeed  = 3.0f;
@@ -2235,12 +2233,12 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
                 glm::mat4 model = glm::translate(glm::mat4(1.0f), center);
                 model = glm::rotate(model, angle, glm::vec3(0, 1, 0));
                 
-                glBindTexture(GL_TEXTURE_2D, conveyorTex);
+                glBindTexture(GL_TEXTURE_2D, conveyorTex); shader.setVec3("objectColor", glm::vec3(0.4f, 0.4f, 0.4f));
                 shader.setMat4("model", glm::scale(model, glm::vec3(2.8f, 0.2f, len)));
                 glDrawArrays(GL_TRIANGLES, 0, 36);
 
                 if (s % 5 == 0) {
-                    glBindTexture(GL_TEXTURE_2D, wallTex);
+                    glBindTexture(GL_TEXTURE_2D, wallTex); shader.setVec3("objectColor", glm::vec3(0.6f, 0.6f, 0.65f));
                     glm::mat4 legL = glm::translate(model, glm::vec3(-1.3f, -0.45f, 0.0f));
                     shader.setMat4("model", glm::scale(legL, glm::vec3(0.2f, 0.9f, 0.2f)));
                     glDrawArrays(GL_TRIANGLES, 0, 36);
@@ -2251,7 +2249,7 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
             }
             
             // Draw animated slats on the curve
-            glBindTexture(GL_TEXTURE_2D, conveyorTex);
+            glBindTexture(GL_TEXTURE_2D, conveyorTex); shader.setVec3("objectColor", glm::vec3(0.4f, 0.4f, 0.4f));
             for (int sl = 0; sl < numSlatPositions; sl++) {
                 // Position along arc (distance parameter)
                 float distAlongArc = sl * slatSpacing - scrollPattern;
@@ -2289,7 +2287,7 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
 
     // 1c. CURVED GUIDE RAILS on every belt arc (inner + outer side barriers)
     // These force boxes to follow the curve — realistic side walls
-    glBindTexture(GL_TEXTURE_2D, wallTex);
+    glBindTexture(GL_TEXTURE_2D, wallTex); shader.setVec3("objectColor", glm::vec3(0.6f, 0.6f, 0.65f));
     for (int b = 0; b < 5; b++) {
         for (size_t si = 0; si < globalPaths[b].size(); si++) {
             const auto& seg = globalPaths[b][si];
@@ -2344,7 +2342,7 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
     }
 
     // 1b. SUPPORT PILLARS for elevated belts (belts 1 and 3, Y=4.5)
-    glBindTexture(GL_TEXTURE_2D, wallTex);
+    glBindTexture(GL_TEXTURE_2D, wallTex); shader.setVec3("objectColor", glm::vec3(0.6f, 0.6f, 0.65f));
     for (int b = 1; b <= 3; b += 2) {         // odd belts only
         float bz     = -40.0f + b * 20.0f;    // -20 or +20
         float beltY  = 4.5f;
@@ -2398,9 +2396,9 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
         }
 
         if (gb.stage == PAINTED || gb.stage == BOUND) {
-            glBindTexture(GL_TEXTURE_2D, blueTex);
+            glBindTexture(GL_TEXTURE_2D, blueTex); shader.setVec3("objectColor", glm::vec3(0.2f, 0.4f, 0.8f));
         } else {
-            glBindTexture(GL_TEXTURE_2D, boxTex);
+            glBindTexture(GL_TEXTURE_2D, boxTex); shader.setVec3("objectColor", glm::vec3(0.8f, 0.6f, 0.4f));
         }
 
         glm::mat4 model = glm::translate(glm::mat4(1.0f), pos);
@@ -2410,7 +2408,7 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
         glDrawArrays(GL_TRIANGLES, 0, 36);
 
         if (gb.stage == BOUND) {
-            glBindTexture(GL_TEXTURE_2D, wallTex);
+            glBindTexture(GL_TEXTURE_2D, wallTex); shader.setVec3("objectColor", glm::vec3(0.6f, 0.6f, 0.65f));
             float offsets[3] = { -0.3f, 0.0f, 0.3f };
             for (int r = 0; r < 3; r++) {
                 glm::mat4 rope = glm::translate(glm::mat4(1.0f), pos + glm::vec3(0.0f, offsets[r], 0.0f));
@@ -2432,26 +2430,29 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
                 float zPos = beltZ + zOff;
                 
                 // Shelf Board
-                glBindTexture(GL_TEXTURE_2D, conveyorTex);
+                glBindTexture(GL_TEXTURE_2D, conveyorTex); shader.setVec3("objectColor", glm::vec3(0.4f, 0.4f, 0.4f));
                 glm::mat4 model = glm::translate(glm::mat4(1.0f), glm::vec3(xPos, y * 3.0f, zPos));
                 model = glm::scale(model, glm::vec3(4.0f, 0.2f, 9.0f));
                 shader.setMat4("model", model);
                 glDrawArrays(GL_TRIANGLES, 0, 36);
                 
                 // Draw static boxes if occupied
-                glBindTexture(GL_TEXTURE_2D, boxTex);
-                for (int s = 0; s < SHELF_SLOTS; s++) {
-                    if (shelfOccupied[side][t][y][s]) {
-                        glm::mat4 bModel = glm::translate(glm::mat4(1.0f), shelfSlotPos[side][t][y][s]);
-                        bModel = glm::scale(bModel, glm::vec3(1.2f, 1.0f, 1.0f));
-                        shader.setMat4("model", bModel);
-                        glDrawArrays(GL_TRIANGLES, 0, 36);
+                // Limit to side == 0 (source shelves) so destination shelves don't have overlapping boxes/textures
+                if (side == 0) {
+                    glBindTexture(GL_TEXTURE_2D, boxTex); shader.setVec3("objectColor", glm::vec3(0.8f, 0.6f, 0.4f));
+                    for (int s = 0; s < SHELF_SLOTS; s++) {
+                        if (shelfOccupied[side][t][y][s]) {
+                            glm::mat4 bModel = glm::translate(glm::mat4(1.0f), shelfSlotPos[side][t][y][s]);
+                            bModel = glm::scale(bModel, glm::vec3(1.0f, 1.0f, 1.0f));
+                            shader.setMat4("model", bModel);
+                            glDrawArrays(GL_TRIANGLES, 0, 36);
+                        }
                     }
                 }
             }
             
             // Vertical posts
-            glBindTexture(GL_TEXTURE_2D, conveyorTex);
+            glBindTexture(GL_TEXTURE_2D, conveyorTex); shader.setVec3("objectColor", glm::vec3(0.4f, 0.4f, 0.4f));
             float xPos = (side == 0) ? -52.0f : 52.0f;
             float beltZ2 = -40.0f + (t / 2) * 20.0f;
             float zOff2  = (t % 2 == 0) ? -3.0f : 3.0f;
@@ -2488,7 +2489,7 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
 
     // 5. DRAW WAREHOUSE ROOM (200x200)
     // 5. DRAW WAREHOUSE ROOM (200x200) - Tiled to fix texture stretching
-    glBindTexture(GL_TEXTURE_2D, floorTex);
+    glBindTexture(GL_TEXTURE_2D, floorTex); shader.setVec3("objectColor", glm::vec3(0.5f, 0.5f, 0.5f));
     // Draw floor in 20x20 chunks
     for (float x = -90.0f; x <= 90.0f; x += 20.0f) {
         for (float z = -90.0f; z <= 90.0f; z += 20.0f) {
@@ -2506,7 +2507,7 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
     }
 
     // Factory Walls Boundary (Thickness 1, Height 30)
-    glBindTexture(GL_TEXTURE_2D, wallTex);
+    glBindTexture(GL_TEXTURE_2D, wallTex); shader.setVec3("objectColor", glm::vec3(0.6f, 0.6f, 0.65f));
     
     // Back Wall (Z = -100), Tiled along X
     for (float x = -90.0f; x <= 90.0f; x += 20.0f) {
@@ -2578,17 +2579,18 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
         // 1. DRAW NEW PILLAR
         glBindVertexArray(VAO);
         glBindTexture(GL_TEXTURE_2D, fracTexture);
-        shader.setVec3("material.diffuse", glm::vec3(0.85f, 0.85f, 0.9f)); // Slightly brighter to pop out
+        shader.setVec3("objectColor", glm::vec3(0.85f, 0.85f, 0.9f)); // Slightly brighter to pop out
         shader.setFloat("material.shininess", 16.0f);
         
         // Base of the pillar starts strictly at Y=0 so slide wraps correctly 0->21
         glm::mat4 baseM = glm::translate(glm::mat4(1.0f), placementPos);
-        drawFractalPillar(shader, baseM, 3, 21.0f, 1.5f, 32.0f, 0.0f); // depth 3 for clean strict Y canopy
+        // Call with depth=3 to guarantee EXACTLY 2 levels of visible branching (Trunk + 2 splitting levels)
+        drawFractalPillar(shader, baseM, 3, 21.0f, 1.5f, 32.0f, 0.0f);
 
         // 2. DRAW HELICOID SPIRAL SURFACE around that pillar
         glBindVertexArray(helicoidVAO);
         glBindTexture(GL_TEXTURE_2D, watchTexture);
-        shader.setVec3("material.diffuse",   glm::vec3(0.75f, 0.75f, 0.80f));
+        shader.setVec3("objectColor",   glm::vec3(0.75f, 0.75f, 0.80f));
         shader.setVec3("material.specular",  glm::vec3(1.0f,  1.0f,  1.0f));
         shader.setFloat("material.shininess", 96.0f);
         glm::mat4 slideModel = glm::translate(glm::mat4(1.0f), slidePos);
@@ -2618,13 +2620,13 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
 
     // Draw Rails
     glBindVertexArray(cwRailVAO);
-    glBindTexture(GL_TEXTURE_2D, blueTex); 
+    glBindTexture(GL_TEXTURE_2D, blueTex); shader.setVec3("objectColor", glm::vec3(0.2f, 0.4f, 0.8f)); 
     shader.setMat4("model", glm::mat4(1.0f));
     glDrawArrays(GL_TRIANGLES, 0, cwRailVertexCount);
 
     // Draw Support Stanchions
     glBindVertexArray(cylinderVAO);
-    glBindTexture(GL_TEXTURE_2D, wallTex);
+    glBindTexture(GL_TEXTURE_2D, wallTex); shader.setVec3("objectColor", glm::vec3(0.6f, 0.6f, 0.65f));
     for (const glm::mat4& sM : catwalkStanchions) {
         shader.setMat4("model", sM);
         glDrawArrays(GL_TRIANGLES, 0, cylinderVertexCount);
@@ -2632,7 +2634,7 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
     
     // Support columns hitting floor
     glBindVertexArray(VAO);
-    glBindTexture(GL_TEXTURE_2D, wallTex);
+    glBindTexture(GL_TEXTURE_2D, wallTex); shader.setVec3("objectColor", glm::vec3(0.6f, 0.6f, 0.65f));
     // Columns under the high flat sections
     for (float px : {-60.0f, 0.0f, 40.0f}) {
         glm::mat4 cM = glm::translate(glm::mat4(1.0f), glm::vec3(px, 8.25f, -15.0f));
@@ -2647,7 +2649,7 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
     doorModel = glm::scale(doorModel, glm::vec3(50.0f, 20.0f, 1.1f));
     shader.setMat4("model", doorModel); glDrawArrays(GL_TRIANGLES, 0, 36);
 
-    glBindTexture(GL_TEXTURE_2D, wallTex);
+    glBindTexture(GL_TEXTURE_2D, wallTex); shader.setVec3("objectColor", glm::vec3(0.6f, 0.6f, 0.65f));
     // Right Wall, Tiled along Z
     for (float z = -90.0f; z <= 90.0f; z += 20.0f) {
         glm::mat4 model = glm::translate(glm::mat4(1.0f), glm::vec3(100.0f, 14.5f, z));
@@ -2700,7 +2702,7 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
 
         if (numStacks % 2 == 0) {
             // Draw stacked crates
-            glBindTexture(GL_TEXTURE_2D, boxTex);
+            glBindTexture(GL_TEXTURE_2D, boxTex); shader.setVec3("objectColor", glm::vec3(0.8f, 0.6f, 0.4f));
             for (int y = 0; y < numStacks; y++) {
                 glm::mat4 crate = glm::translate(glm::mat4(1.0f), glm::vec3(x, y * 2.0f + 0.3f, -95.0f));
                 crate = glm::rotate(crate, heightSeed, glm::vec3(0,1,0)); // random rotation
@@ -2712,7 +2714,7 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
             extern unsigned int cylinderVAO;
             extern int cylinderVertexCount;
             glBindVertexArray(cylinderVAO);
-            glBindTexture(GL_TEXTURE_2D, conveyorTex);
+            glBindTexture(GL_TEXTURE_2D, conveyorTex); shader.setVec3("objectColor", glm::vec3(0.4f, 0.4f, 0.4f));
             for (int y = 0; y < 2; y++) {
                 for (float zOff = -96.0f; zOff <= -92.0f; zOff += 2.0f) {
                     glm::mat4 barrel = glm::translate(glm::mat4(1.0f), glm::vec3(x, y * 3.0f + 1.5f, zOff));
@@ -2766,8 +2768,9 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
             shader.setMat4("model", pM);
             glDrawArrays(GL_TRIANGLES, 0, 36); // basic cube
         }
-        shader.setBool("ambientOn", masterLightOn && ambientOn); 
-        shader.setBool("useTextureColorOnly", useTextureColorOnly); 
+        shader.setBool("ambientOn", ambientOn); 
+        shader.setBool("useTextureColorOnly", useTextureColorOnly);
+    shader.setBool("textureOn", textureOn); 
     }
 
 
@@ -2778,9 +2781,9 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
         extern int mengerVertexCount;
         
         glBindVertexArray(mengerVAO);
-        glBindTexture(GL_TEXTURE_2D, wallTex);
+        glBindTexture(GL_TEXTURE_2D, wallTex); shader.setVec3("objectColor", glm::vec3(0.6f, 0.6f, 0.65f));
         
-        shader.setVec3("material.diffuse", glm::vec3(0.6f, 0.6f, 0.65f)); // iron gray
+        shader.setVec3("objectColor", glm::vec3(0.6f, 0.6f, 0.65f)); // iron gray
         shader.setFloat("material.shininess", 16.0f);
         
         // Massive shelving unit near the back right corner: X=70, Z=-80. Floor is Y=0.
@@ -2816,7 +2819,7 @@ void processInput(GLFWwindow* window)
     // Assignment mode specific controls
     if (mainCamera.Mode == ASSIGNMENT) {
         if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) mainCamera.ProcessKeyboard(UP, deltaTime);
-        if (glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS) mainCamera.ProcessKeyboard(DOWN, deltaTime);
+        if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) mainCamera.ProcessKeyboard(DOWN, deltaTime);
         if (glfwGetKey(window, GLFW_KEY_X) == GLFW_PRESS) mainCamera.ProcessKeyboard(PITCH_UP, deltaTime);
         if (glfwGetKey(window, GLFW_KEY_Y) == GLFW_PRESS) mainCamera.ProcessKeyboard(YAW_LEFT, deltaTime);
         if (glfwGetKey(window, GLFW_KEY_Z) == GLFW_PRESS) mainCamera.ProcessKeyboard(ROLL_LEFT, deltaTime);
@@ -2862,8 +2865,33 @@ void processInput(GLFWwindow* window)
     DO_TOGGLE(GLFW_KEY_M, mainLightOn, keyM_pressed)
     DO_TOGGLE(GLFW_KEY_G, fanOn, keyG_pressed)
     DO_TOGGLE(GLFW_KEY_V, singleViewport, keyV_pressed)
-    DO_TOGGLE(GLFW_KEY_T, useTextureColorOnly, keyT_pressed)
-    DO_TOGGLE(GLFW_KEY_P, usePhong, keyP_pressed)
+    // T key: Texture Only Mode (Texture ON, Surface Lighting OFF)
+    if (glfwGetKey(window, GLFW_KEY_T) == GLFW_PRESS) {
+        if (!keyT_pressed) {
+            useTextureColorOnly = !useTextureColorOnly;
+            if (useTextureColorOnly) textureOn = true; // Ensure texture is visible
+            keyT_pressed = true;
+        }
+    } else { keyT_pressed = false; }
+
+    // R key: Vanilla Shading Mode (Texture OFF, Surface Lighting ON)
+    if (glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS) {
+        if (!keyR_pressed) {
+            textureOn = !textureOn;
+            if (!textureOn) useTextureColorOnly = false; // Ensure we see surface shading
+            keyR_pressed = true;
+        }
+    } else { keyR_pressed = false; }
+
+    // P key: Blended Shading Mode (Texture ON, Surface Lighting ON, toggle Gouraud/Phong)
+    if (glfwGetKey(window, GLFW_KEY_P) == GLFW_PRESS) {
+        if (!keyP_pressed) {
+            usePhong = !usePhong;
+            useTextureColorOnly = false; // Force blending to be visible
+            textureOn = true;            // Force blending to be visible
+            keyP_pressed = true;
+        }
+    } else { keyP_pressed = false; }
     DO_TOGGLE(GLFW_KEY_O, doorOpen, keyO_pressed)
 
         // We can leave 8 and 9 as backups if they were already there
@@ -2946,3 +2974,4 @@ unsigned int loadTexture(char const* path, unsigned char r, unsigned char g, uns
 
     return textureID;
 }
+

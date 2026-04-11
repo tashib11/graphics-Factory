@@ -9,12 +9,18 @@ struct Material {
 };
 uniform Material material;
 uniform bool useTextureColorOnly;
+uniform bool textureOn = true;
+uniform vec3 objectColor = vec3(1.0, 1.0, 1.0);
+
+vec4 getDiffuseMap() {
+    return textureOn ? texture(material.diffuse, TexCoords) : vec4(objectColor, 1.0);
+}
 
 void main()
 {
     if(useTextureColorOnly) {
-        FragColor = texture(material.diffuse, TexCoords);
+        FragColor = getDiffuseMap();
     } else {
-        FragColor = vertexColor * texture(material.diffuse, TexCoords);
+        FragColor = vertexColor * getDiffuseMap();
     }
 }
