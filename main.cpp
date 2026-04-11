@@ -519,6 +519,9 @@ unsigned int ductTexture = 0;
 unsigned int streetTexture = 0;
 unsigned int grassTexture = 0;
 unsigned int skyTexture = 0;
+unsigned int barrelTexture = 0;
+unsigned int barrelVAO = 0;
+int barrelVertexCount = 0;
 
 void buildDuctworkSystem() {
     std::vector<float> ductVerts;
@@ -1020,6 +1023,113 @@ void buildCylinder() {
     glGenBuffers(1, &VBO);
     glBindVertexArray(cylinderVAO);
     glBindBuffer(GL_ARRAY_BUFFER, VBO);
+    glBufferData(GL_ARRAY_BUFFER, verts.size() * sizeof(float), verts.data(), GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
+    glEnableVertexAttribArray(2);
+}
+
+// ─── Proper Barrel Shape (bulging sides + closed caps + metal bands) ─────────
+void buildBarrel() {
+    std::vector<float> verts;
+    const int   radialSegs = 32;
+    const int   heightSegs = 24;
+    const float PI   = 3.14159265f;
+    const float r_top = 0.36f;   // radius at top & bottom rims
+    const float r_mid = 0.50f;   // maximum radius at barrel equator
+
+    // radius at normalised height t in [0,1]
+    auto getR = [&](float t) { return r_top + (r_mid - r_top) * sinf(PI * t); };
+
+    // push one vertex  pos | analytic-normal | uv
+    auto push = [&](float r, float y, float cosA, float sinA,
+                    float nR, float nY, float u, float v) {
+        verts.push_back(r * cosA); verts.push_back(y);       verts.push_back(r * sinA);
+        verts.push_back(nR * cosA); verts.push_back(nY); verts.push_back(nR * sinA);
+        verts.push_back(u); verts.push_back(v);
+    };
+
+    // ── SIDE SURFACE ───────────────────────────────────────────────────────────
+    for (int hi = 0; hi < heightSegs; hi++) {
+        float t0 = (float)hi       / heightSegs;
+        float t1 = (float)(hi + 1) / heightSegs;
+        float y0 = -0.5f + t0,  y1 = -0.5f + t1;
+        float r0 = getR(t0),    r1 = getR(t1);
+
+        // Analytic outward normal from profile tangent (dR/dt, 1) → normal (1, -dR/dt) normalised
+        float dR0 = (r_mid - r_top) * PI * cosf(PI * t0);
+        float dR1 = (r_mid - r_top) * PI * cosf(PI * t1);
+        float len0 = sqrtf(1.0f + dR0 * dR0), len1 = sqrtf(1.0f + dR1 * dR1);
+        float nr0 = 1.0f / len0,  ny0 = -dR0 / len0;
+        float nr1 = 1.0f / len1,  ny1 = -dR1 / len1;
+
+        for (int ri = 0; ri < radialSegs; ri++) {
+            float a0 = 2.0f * PI * (float)ri       / radialSegs;
+            float a1 = 2.0f * PI * (float)(ri + 1) / radialSegs;
+            float c0 = cosf(a0), s0 = sinf(a0);
+            float c1 = cosf(a1), s1 = sinf(a1);
+            float u0 = (float)ri / radialSegs, u1 = (float)(ri + 1) / radialSegs;
+
+            push(r0, y0, c0, s0, nr0, ny0, u0, t0);
+            push(r0, y0, c1, s1, nr0, ny0, u1, t0);
+            push(r1, y1, c0, s0, nr1, ny1, u0, t1);
+
+            push(r0, y0, c1, s1, nr0, ny0, u1, t0);
+            push(r1, y1, c1, s1, nr1, ny1, u1, t1);
+            push(r1, y1, c0, s0, nr1, ny1, u0, t1);
+        }
+    }
+
+    // ── TOP CAP ────────────────────────────────────────────────────────────────
+    {
+        float y = 0.5f,  r = getR(1.0f);
+        for (int ri = 0; ri < radialSegs; ri++) {
+            float a0 = 2.0f * PI * (float)ri       / radialSegs;
+            float a1 = 2.0f * PI * (float)(ri + 1) / radialSegs;
+            // centre
+            verts.push_back(0.0f); verts.push_back(y); verts.push_back(0.0f);
+            verts.push_back(0.0f); verts.push_back(1.0f); verts.push_back(0.0f);
+            verts.push_back(0.5f); verts.push_back(0.5f);
+            // rim a0
+            verts.push_back(r*cosf(a0)); verts.push_back(y); verts.push_back(r*sinf(a0));
+            verts.push_back(0.0f); verts.push_back(1.0f); verts.push_back(0.0f);
+            verts.push_back(0.5f + 0.5f*cosf(a0)); verts.push_back(0.5f + 0.5f*sinf(a0));
+            // rim a1
+            verts.push_back(r*cosf(a1)); verts.push_back(y); verts.push_back(r*sinf(a1));
+            verts.push_back(0.0f); verts.push_back(1.0f); verts.push_back(0.0f);
+            verts.push_back(0.5f + 0.5f*cosf(a1)); verts.push_back(0.5f + 0.5f*sinf(a1));
+        }
+    }
+
+    // ── BOTTOM CAP ─────────────────────────────────────────────────────────────
+    {
+        float y = -0.5f, r = getR(0.0f);
+        for (int ri = 0; ri < radialSegs; ri++) {
+            float a0 = 2.0f * PI * (float)ri       / radialSegs;
+            float a1 = 2.0f * PI * (float)(ri + 1) / radialSegs;
+            // centre
+            verts.push_back(0.0f); verts.push_back(y); verts.push_back(0.0f);
+            verts.push_back(0.0f); verts.push_back(-1.0f); verts.push_back(0.0f);
+            verts.push_back(0.5f); verts.push_back(0.5f);
+            // reversed winding for downward-facing cap
+            verts.push_back(r*cosf(a1)); verts.push_back(y); verts.push_back(r*sinf(a1));
+            verts.push_back(0.0f); verts.push_back(-1.0f); verts.push_back(0.0f);
+            verts.push_back(0.5f + 0.5f*cosf(a1)); verts.push_back(0.5f + 0.5f*sinf(a1));
+            verts.push_back(r*cosf(a0)); verts.push_back(y); verts.push_back(r*sinf(a0));
+            verts.push_back(0.0f); verts.push_back(-1.0f); verts.push_back(0.0f);
+            verts.push_back(0.5f + 0.5f*cosf(a0)); verts.push_back(0.5f + 0.5f*sinf(a0));
+        }
+    }
+
+    barrelVertexCount = (int)(verts.size() / 8);
+    unsigned int vbo;
+    glGenVertexArrays(1, &barrelVAO);
+    glGenBuffers(1, &vbo);
+    glBindVertexArray(barrelVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
     glBufferData(GL_ARRAY_BUFFER, verts.size() * sizeof(float), verts.data(), GL_STATIC_DRAW);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
@@ -1652,6 +1762,7 @@ int main()
     buildSphere();
     buildOval();
     buildCone();
+    buildBarrel();
     buildMengerSponge();
 
     std::string boxTexPath = getResourcePath("texture", "box.jpg");
@@ -1679,7 +1790,7 @@ int main()
     unsigned int tunnelTexture = loadTexture(tunnelTexPath.c_str(), 200, 200, 200); 
     unsigned int whiteLightTexture = loadTexture("", 255, 255, 255); 
     unsigned int randomPropTexture = loadTexture(randomPropTexPath.c_str(), 200, 100, 50);
-    unsigned int barrelTexture = loadTexture(barrelTexPath.c_str(), 80, 80, 200);
+    barrelTexture = loadTexture(barrelTexPath.c_str(), 80, 80, 200);
     unsigned int doorTexture = loadTexture(doorTexPath.c_str(), 100, 100, 100);
     unsigned int bakaTexture = loadTexture(bakaTexPath.c_str(), 139, 69, 19);
     unsigned int coneTexture = loadTexture(coneTexPath.c_str(), 200, 128, 64);
@@ -2711,63 +2822,88 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
     drawExhaustFan(shader);
 
     // --- 6. RANDOM MATERIALS STORAGE ---
-    // Storing miscellaneous materials near the Back Wall (Z = -95)
-    for (float x = -80.0f; x <= 80.0f; x += 15.0f) {
-        float heightSeed = abs(sin(x * 12.3f) + cos(x * 4.5f)); // pseudo-random
-        int numStacks = 1 + (int)(heightSeed * 3.0f); // 1 to 4 boxes stacked
+    //// Storing miscellaneous materials near the Back Wall (Z = -95)
+    //for (float x = -80.0f; x <= 80.0f; x += 15.0f) {
+    //    float heightSeed = abs(sin(x * 12.3f) + cos(x * 4.5f)); // pseudo-random
+    //    int numStacks = 1 + (int)(heightSeed * 3.0f); // 1 to 4 boxes stacked
 
-        if (numStacks % 2 == 0) {
-            // Draw stacked crates
-            glBindTexture(GL_TEXTURE_2D, boxTex); shader.setVec3("objectColor", glm::vec3(0.8f, 0.6f, 0.4f));
-            for (int y = 0; y < numStacks; y++) {
-                glm::mat4 crate = glm::translate(glm::mat4(1.0f), glm::vec3(x, y * 2.0f + 0.3f, -95.0f));
-                crate = glm::rotate(crate, heightSeed, glm::vec3(0,1,0)); // random rotation
-                shader.setMat4("model", glm::scale(crate, glm::vec3(2.0f, 2.0f, 2.0f)));
-                glDrawArrays(GL_TRIANGLES, 0, 36);
-            }
-        } else {
-            // Draw barrels
-            extern unsigned int cylinderVAO;
-            extern int cylinderVertexCount;
-            glBindVertexArray(cylinderVAO);
-            glBindTexture(GL_TEXTURE_2D, conveyorTex); shader.setVec3("objectColor", glm::vec3(0.4f, 0.4f, 0.4f));
-            for (int y = 0; y < 2; y++) {
-                for (float zOff = -96.0f; zOff <= -92.0f; zOff += 2.0f) {
-                    glm::mat4 barrel = glm::translate(glm::mat4(1.0f), glm::vec3(x, y * 3.0f + 1.5f, zOff));
-                    shader.setMat4("model", glm::scale(barrel, glm::vec3(1.5f, 3.0f, 1.5f)));
-                    glDrawArrays(GL_TRIANGLES, 0, cylinderVertexCount);
-                }
-            }
-            // re-bind original cube VAO
-            glBindVertexArray(VAO);
-        }
-    }
+    //    if (numStacks % 2 == 0) {
+    //        // Draw stacked crates
+    //        glBindTexture(GL_TEXTURE_2D, boxTex); shader.setVec3("objectColor", glm::vec3(0.8f, 0.6f, 0.4f));
+    //        for (int y = 0; y < numStacks; y++) {
+    //            glm::mat4 crate = glm::translate(glm::mat4(1.0f), glm::vec3(x, y * 2.0f + 0.3f, -95.0f));
+    //            crate = glm::rotate(crate, heightSeed, glm::vec3(0,1,0)); // random rotation
+    //            shader.setMat4("model", glm::scale(crate, glm::vec3(2.0f, 2.0f, 2.0f)));
+    //            glDrawArrays(GL_TRIANGLES, 0, 36);
+    //        }
+    //    } else {
+    //        // Draw proper barrel shapes: bulging body + caps + metal band rings
+    //        extern unsigned int barrelVAO;
+    //        extern int barrelVertexCount;
+    //        extern unsigned int barrelTexture;
 
-    // ★ DECORATIVE OVALS ON FLOOR ★ at specified WCS locations
-    extern unsigned int ovalVAO;
-    extern int ovalVertexCount;
-    glBindVertexArray(ovalVAO);
-    glBindTexture(GL_TEXTURE_2D, bakaTexture);
-    
-    // Shape created from provided WCS coordinates - placed near back wall at Z=5.1
-    // Coordinates span from X: -0.8 to -0.7 (approximately), Y: 0.408 to 2.149
-    // This creates an oval/shape near the back wall
-    glm::mat4 bakaShape = glm::translate(glm::mat4(1.0f), glm::vec3(-0.8f, 0.0f, 5.1f));
-    bakaShape = glm::scale(bakaShape, glm::vec3(4.0f, 1.0f, 3.0f));
-    shader.setMat4("model", bakaShape);
-    glDrawArrays(GL_TRIANGLE_FAN, 0, ovalVertexCount);
-    
-    // ★ CONE SHAPE ON FLOOR ★ next to baka shape
-    extern unsigned int coneVAO;
-    extern int coneVertexCount;
-    glBindVertexArray(coneVAO);
-    glBindTexture(GL_TEXTURE_2D, coneTexture);
-    
-    // Cone positioned beside the baka shape
-    glm::mat4 coneShape = glm::translate(glm::mat4(1.0f), glm::vec3(1.2f, 0.0f, 5.1f));
-    coneShape = glm::scale(coneShape, glm::vec3(2.5f, 1.0f, 2.5f));
-    shader.setMat4("model", coneShape);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, coneVertexCount);
+    //        const float bScale = 2.0f;   // diameter
+    //        const float bH     = 2.3f;   // height of each barrel unit
+
+    //        for (int iy = 0; iy < 2; iy++) {         // 2 high
+    //            for (int iz = 0; iz < 2; iz++) {     // 2 deep
+    //                float bz = -93.0f - iz * (bScale + 0.3f);
+    //                float by = iy * (bH + 0.05f) + bH * 0.5f;  // bottom sits on floor
+
+    //                // ── barrel body ─────────────────────────────────────────
+    //                glBindVertexArray(barrelVAO);
+    //                glBindTexture(GL_TEXTURE_2D, barrelTexture);
+    //                shader.setVec3("objectColor", glm::vec3(0.55f, 0.35f, 0.20f));
+    //                shader.setFloat("material.shininess", 16.0f);
+    //                glm::mat4 bm = glm::translate(glm::mat4(1.0f), glm::vec3(x, by, bz));
+    //                bm = glm::scale(bm, glm::vec3(bScale, bH, bScale));
+    //                shader.setMat4("model", bm);
+    //                glDrawArrays(GL_TRIANGLES, 0, barrelVertexCount);
+
+    //                // ── 3 metal band rings per barrel ────────────────────────
+    //                glBindVertexArray(VAO);
+    //                glBindTexture(GL_TEXTURE_2D, conveyorTex);
+    //                shader.setVec3("objectColor", glm::vec3(0.32f, 0.36f, 0.38f));
+    //                float bandOffsets[3] = { -0.34f, 0.0f, 0.34f };
+    //                for (int bi = 0; bi < 3; bi++) {
+    //                    glm::mat4 band = glm::translate(glm::mat4(1.0f),
+    //                        glm::vec3(x, by + bandOffsets[bi] * bH, bz));
+    //                    band = glm::scale(band, glm::vec3(bScale * 1.07f, 0.09f, bScale * 1.07f));
+    //                    shader.setMat4("model", band);
+    //                    glDrawArrays(GL_TRIANGLES, 0, 36);
+    //                }
+    //            }
+    //        }
+    //        shader.setFloat("material.shininess", 32.0f);
+    //        glBindVertexArray(VAO);
+    //    }
+    //}
+
+    //// ★ DECORATIVE OVALS ON FLOOR ★ at specified WCS locations
+    //extern unsigned int ovalVAO;
+    //extern int ovalVertexCount;
+    //glBindVertexArray(ovalVAO);
+    //glBindTexture(GL_TEXTURE_2D, bakaTexture);
+    //
+    //// Shape created from provided WCS coordinates - placed near back wall at Z=5.1
+    //// Coordinates span from X: -0.8 to -0.7 (approximately), Y: 0.408 to 2.149
+    //// This creates an oval/shape near the back wall
+    //glm::mat4 bakaShape = glm::translate(glm::mat4(1.0f), glm::vec3(-0.8f, 0.0f, 5.1f));
+    //bakaShape = glm::scale(bakaShape, glm::vec3(4.0f, 1.0f, 3.0f));
+    //shader.setMat4("model", bakaShape);
+    //glDrawArrays(GL_TRIANGLE_FAN, 0, ovalVertexCount);
+    //
+    //// ★ CONE SHAPE ON FLOOR ★ next to baka shape
+    //extern unsigned int coneVAO;
+    //extern int coneVertexCount;
+    //glBindVertexArray(coneVAO);
+    //glBindTexture(GL_TEXTURE_2D, coneTexture);
+    //
+    //// Cone positioned beside the baka shape
+    //glm::mat4 coneShape = glm::translate(glm::mat4(1.0f), glm::vec3(1.2f, 0.0f, 5.1f));
+    //coneShape = glm::scale(coneShape, glm::vec3(2.5f, 1.0f, 2.5f));
+    //shader.setMat4("model", coneShape);
+    //glDrawArrays(GL_TRIANGLE_STRIP, 0, coneVertexCount);
     
     // 7. DRAW PARTICLES
     extern std::vector<Particle> sparkParticles;
@@ -2810,11 +2946,6 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
         shader.setMat4("model", spongeModel);
         glDrawArrays(GL_TRIANGLES, 0, mengerVertexCount);
 
-        // Also place another one on the left side
-        glm::mat4 spongeModel2 = glm::translate(glm::mat4(1.0f), glm::vec3(-70.0f, 15.0f, -50.0f));
-        spongeModel2 = glm::scale(spongeModel2, glm::vec3(30.0f, 30.0f, 15.0f)); 
-        shader.setMat4("model", spongeModel2);
-        glDrawArrays(GL_TRIANGLES, 0, mengerVertexCount);
     }
 
     // ═══════════════════════════════════════════════════════════════
