@@ -3057,6 +3057,11 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
             glDrawArrays(GL_TRIANGLES, 0, 36);
         }
 
+    // ── LIGHT FIXTURES ─────────────────────────────────────────────
+    // Call the built-in geometry renderer for the ceiling fixtures 
+    // to stick them to the roof and drop realistic cords down to point light coordinates
+    drawCeilingLights(shader, VAO, wallTex, whiteLightTex);
+
     // ── 3. SKY ─────────────────────────────────────────────────────
     // Inverted cube tracked to the camera position so it is always
     // centred on the viewer and never clipped by the far plane.
