@@ -540,28 +540,28 @@ void buildDuctworkSystem() {
         // Odd belts curve towards -Z (sweep = PI), Mid = bz - R
         float chamberZ = (b % 2 == 0) ? bz + R : bz - R; 
         
-        // Offset narrowed to physically overlap and structurally combine the 5 pipes.
-        float bundleZ = (b - 2) * 1.1f;
+        // Maintain consistent distinct spacing to prevent bundled connections
+        float pathZ = chamberZ;
         
         std::vector<glm::vec3> cp;
         // Extend sequence at ends via duplicates for B-spline completeness
         // Start exactly centered on the Paint Chamber. Tunnel top is at beltY + 1.7f.
-        glm::vec3 startP(0.0f, beltY + 1.0f, chamberZ);
+        glm::vec3 startP(0.0f, beltY + 1.0f, pathZ);
         cp.push_back(startP); 
         cp.push_back(startP); 
         cp.push_back(startP); 
         
         // Ascend vertically out of the chamber
-        cp.push_back(glm::vec3(0.0f, 16.0f, chamberZ));
-        cp.push_back(glm::vec3(0.0f, 25.0f, chamberZ));
+        cp.push_back(glm::vec3(0.0f, 16.0f, pathZ));
+        cp.push_back(glm::vec3(0.0f, 25.0f, pathZ));
         
-        // Bend aggressively into the central ceiling manifold
-        cp.push_back(glm::vec3(0.0f, 28.0f, chamberZ));
-        cp.push_back(glm::vec3(-20.0f, 28.0f, chamberZ * 0.5f)); 
-        cp.push_back(glm::vec3(-40.0f, 28.0f, bundleZ)); 
-        cp.push_back(glm::vec3(-70.0f, 28.0f, bundleZ));
+        // Bend smoothly towards the back wall without merging
+        cp.push_back(glm::vec3(0.0f, 28.0f, pathZ));
+        cp.push_back(glm::vec3(-20.0f, 28.0f, pathZ)); 
+        cp.push_back(glm::vec3(-40.0f, 28.0f, pathZ)); 
+        cp.push_back(glm::vec3(-70.0f, 28.0f, pathZ));
         
-        glm::vec3 endP(-100.0f, 28.0f, bundleZ);
+        glm::vec3 endP(-100.0f, 28.0f, pathZ);
         cp.push_back(endP);
         cp.push_back(endP);
         cp.push_back(endP);
@@ -1431,7 +1431,7 @@ void drawExhaustFan(Shader& shader) {
     glm::mat4 hub = glm::translate(glm::mat4(1.0f), fanCenter);
     // Orient cylinder perfectly along X axis
     hub = glm::rotate(hub, glm::half_pi<float>(), glm::vec3(0, 0, 1));
-    hub = glm::scale(hub, glm::vec3(1.2f, 4.0f, 1.2f)); // scale to nice hub size
+    hub = glm::scale(hub, glm::vec3(2.5f, 4.0f, 2.5f)); // scale to nice hub size
     shader.setMat4("model", hub);
     glDrawArrays(GL_TRIANGLES, 0, cylinderVertexCount);
     
