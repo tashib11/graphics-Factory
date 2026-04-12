@@ -5,6 +5,7 @@ layout (location = 2) in vec2 aTexCoords;
 
 out vec4 vertexColor;
 out vec2 TexCoords;
+out vec3 FragPos;
 
 struct DirLight {
     vec3 direction;
@@ -58,7 +59,7 @@ vec3 CalcSpotLight(SpotLight light, vec3 normal, vec3 fragPos, vec3 viewDir);
 
 void main()
 {
-    vec3 FragPos = vec3(model * vec4(aPos, 1.0));
+    FragPos = vec3(model * vec4(aPos, 1.0));
     vec3 Normal = mat3(transpose(inverse(model))) * aNormal;  
     
     gl_Position = projection * view * vec4(FragPos, 1.0);

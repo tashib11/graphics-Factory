@@ -66,12 +66,31 @@ uniform bool useTextureColorOnly;
 uniform bool textureOn = true;
 uniform vec3 objectColor = vec3(1.0, 1.0, 1.0);
 
+// ── Texture-scroll support ──────────────────────────────────────────────────
+// When useTexOffset is true the UV is shifted by texOffset every frame.
+// GL_REPEAT (set at texture load time) makes the wrap seamless automatically.
+uniform bool  useTexOffset;
+uniform vec2  texOffset;
+uniform vec2  texScale = vec2(1.0, 1.0);
+uniform bool  isSkybox = false;
+
+vec2 getUV() {
+    if (isSkybox) {
+        vec3 d = normalize(FragPos - viewPos);
+        vec2 uv = vec2(atan(d.z, d.x), asin(d.y));
+        uv *= vec2(0.1591549, 0.3183098);
+        return uv + 0.5;
+    }
+    vec2 st = TexCoords * texScale;
+    return useTexOffset ? st + texOffset : st;
+}
+
 vec4 getDiffuseMap() {
-    return textureOn ? texture(material.diffuse, TexCoords) : vec4(objectColor, 1.0);
+    return textureOn ? texture(material.diffuse,  getUV()) : vec4(objectColor, 1.0);
 }
 
 vec4 getSpecularMap() {
-    return textureOn ? texture(material.specular, TexCoords) : vec4(1.0);
+    return textureOn ? texture(material.specular, getUV()) : vec4(1.0);
 }
 
 // function prototypes

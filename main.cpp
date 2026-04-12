@@ -42,6 +42,7 @@ float lastFrame = 0.0f;
 
 // Conveyor belt box speed (units/sec) - controllable via + / - keys
 float conveyorSpeed = 3.0f;
+float conveyorTexScroll = 0.0f;
 
 // Toggles state
 bool dirLightOn = true;
@@ -1887,6 +1888,9 @@ int main()
         extern float exhaustFanAngle;
         exhaustFanAngle += exhaustFanSpeed * deltaTime;
         
+        extern float conveyorTexScroll, conveyorSpeed;
+        conveyorTexScroll += conveyorSpeed * deltaTime;
+        
         if (fanOn) fanAngle += 150.0f * deltaTime;
         robotBaseAngle += 20.0f * deltaTime;
         robotElbowAngle = sin(glfwGetTime() * 2.0f) * 30.0f;
@@ -2258,7 +2262,9 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
     // 1. DRAW SPRAWLING CONVEYOR GRID NETWORK
     glBindTexture(GL_TEXTURE_2D, conveyorTex); shader.setVec3("objectColor", glm::vec3(0.4f, 0.4f, 0.4f));
     extern std::vector<PathSegment> globalPaths[5];
+    extern float conveyorTexScroll;
     for (int b = 0; b < 5; b++) {
+    float distanceAlongBelt = 0.0f;
     for (size_t i = 0; i < globalPaths[b].size(); i++) {
         const auto& seg = globalPaths[b][i];
         if (seg.type == STRAIGHT) {
@@ -2277,7 +2283,16 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
             glBindTexture(GL_TEXTURE_2D, conveyorTex); shader.setVec3("objectColor", glm::vec3(0.4f, 0.4f, 0.4f));
             glm::mat4 bedM = glm::translate(model, glm::vec3(0.0f, 0.0f, 0.0f));
             shader.setMat4("model", glm::scale(bedM, glm::vec3(2.8f, 0.2f, len)));
+            
+            float beltSpdMult = (i == 0 || i == globalPaths[b].size() - 1) ? 0.0f : 1.0f;
+            shader.setBool("useTexOffset", true);
+            shader.setVec2("texScale", glm::vec2(1.0f, len * 0.5f));
+            shader.setVec2("texOffset", glm::vec2(0.0f, -distanceAlongBelt * 0.5f + conveyorTexScroll * beltSpdMult * 0.5f));
+            
             glDrawArrays(GL_TRIANGLES, 0, 36);
+            
+            shader.setBool("useTexOffset", false);
+            shader.setVec2("texScale", glm::vec2(1.0f, 1.0f));
 
             // Animated slats — thin boxes sliding along belt direction
             glBindTexture(GL_TEXTURE_2D, conveyorTex); shader.setVec3("objectColor", glm::vec3(0.4f, 0.4f, 0.4f));
@@ -2362,7 +2377,16 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
                 
                 glBindTexture(GL_TEXTURE_2D, conveyorTex); shader.setVec3("objectColor", glm::vec3(0.4f, 0.4f, 0.4f));
                 shader.setMat4("model", glm::scale(model, glm::vec3(2.8f, 0.2f, len)));
+                
+                shader.setBool("useTexOffset", true);
+                shader.setVec2("texScale", glm::vec2(1.0f, len * 0.5f));
+                float currentCurveDist = t1 * arcLength;
+                shader.setVec2("texOffset", glm::vec2(0.0f, -(distanceAlongBelt + currentCurveDist) * 0.5f + conveyorTexScroll * 0.5f));
+
                 glDrawArrays(GL_TRIANGLES, 0, 36);
+                
+                shader.setBool("useTexOffset", false);
+                shader.setVec2("texScale", glm::vec2(1.0f, 1.0f));
 
                 if (s % 5 == 0) {
                     glBindTexture(GL_TEXTURE_2D, wallTex); shader.setVec3("objectColor", glm::vec3(0.6f, 0.6f, 0.65f));
@@ -2409,6 +2433,7 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
                 glDrawArrays(GL_TRIANGLES, 0, 36);
             }
         }
+        distanceAlongBelt += seg.length;
     }
     }
 
@@ -3042,10 +3067,16 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
     glBindTexture(GL_TEXTURE_2D, skyTexture);
     shader.setVec3("objectColor", glm::vec3(0.53f, 0.81f, 0.98f));
     shader.setBool("useTextureColorOnly", true);
+    
+    shader.setBool("isSkybox", true);
+    
     glm::mat4 skyModel = glm::translate(glm::mat4(1.0f), camPos);  // follow camera
     skyModel = glm::scale(skyModel, glm::vec3(1800.0f, 1800.0f, 1800.0f));
     shader.setMat4("model", skyModel);
     glDrawArrays(GL_TRIANGLES, 0, 36);
+    
+    shader.setBool("isSkybox", false);
+    
     shader.setBool("useTextureColorOnly", useTextureColorOnly);
     glFrontFace(GL_CCW);
     glDepthMask(GL_TRUE);
