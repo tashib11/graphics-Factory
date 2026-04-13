@@ -1416,8 +1416,8 @@ void buildMengerSponge() {
 
 // Massive Central Wall Exhaust Fan utilizing Ruled Surface aerodynamic blades
 void drawExhaustFan(Shader& shader) {
-    // Shifted from Y=26.0f to Y=21.0f to strongly separate internal geometry from duct pipeline above
-    glm::vec3 fanCenter(-100.0f, 21.0f, 0.0f);
+    // Shifted to Y=19.0f so the 2x scaled blades do not overlap the ducts at Y=28.0f or floor at Y=0.0f
+    glm::vec3 fanCenter(-100.0f, 19.0f, 0.0f);
     
     // Ensure appropriate darkness for heavy industrial metal
     shader.setVec3("objectColor", glm::vec3(0.5f, 0.5f, 0.5f));
@@ -1433,7 +1433,7 @@ void drawExhaustFan(Shader& shader) {
     glm::mat4 hub = glm::translate(glm::mat4(1.0f), fanCenter);
     // Orient cylinder perfectly along X axis
     hub = glm::rotate(hub, glm::half_pi<float>(), glm::vec3(0, 0, 1));
-    hub = glm::scale(hub, glm::vec3(2.5f, 4.0f, 2.5f)); // scale to nice hub size
+    hub = glm::scale(hub, glm::vec3(5.0f, 8.0f, 5.0f)); // Scaled 2x to match fan size
     shader.setMat4("model", hub);
     glDrawArrays(GL_TRIANGLES, 0, cylinderVertexCount);
     
@@ -1449,7 +1449,7 @@ void drawExhaustFan(Shader& shader) {
         glm::mat4 blade = glm::translate(glm::mat4(1.0f), fanCenter);
         // Spin around X axis
         blade = glm::rotate(blade, bladeAngle, glm::vec3(1, 0, 0));
-        // Rotate so +Y aligns across planar faces
+        blade = glm::scale(blade, glm::vec3(2.0f, 2.0f, 2.0f)); // Scaled 2x
         shader.setMat4("model", blade);
         glDrawArrays(GL_TRIANGLES, 0, fanBladeVertexCount);
     }
@@ -2824,27 +2824,27 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
     }
     
     // Custom Left Wall Frame for Exhaust Fan cutout
-    // We lowered the Fan Center to Y=21. Frame Hole is now Y in [17, 25], Z in [-4, 4]. (Width=8, Height=8) 
+    // Fan Center is lowered to Y=19. Frame Hole is now Y in [11, 27], Z in [-8, 8]. (Width=16, Height=16)
     // Gap filled: Z in [-20, 20]. Width=40.
 
-    // Bottom Block: covers Y from -0.5 to 17. Height = 17.5. Center Y = 8.25
-    glm::mat4 bModel = glm::translate(glm::mat4(1.0f), glm::vec3(-100.0f, 8.25f, 0.0f));
-    bModel = glm::scale(bModel, glm::vec3(1.0f, 17.5f, 40.0f));
+    // Bottom Block: covers Y from -0.5 to 11. Height = 11.5. Center Y = 5.25
+    glm::mat4 bModel = glm::translate(glm::mat4(1.0f), glm::vec3(-100.0f, 5.25f, 0.0f));
+    bModel = glm::scale(bModel, glm::vec3(1.0f, 11.5f, 40.0f));
     shader.setMat4("model", bModel); glDrawArrays(GL_TRIANGLES, 0, 36);
     
-    // Top Block: covers Y from 25 to 29.5. Height = 4.5. Center Y = 27.25. (Ducts at Y=28 pierce flawlessly through this newly added wall seal)
-    glm::mat4 tModel = glm::translate(glm::mat4(1.0f), glm::vec3(-100.0f, 27.25f, 0.0f));
-    tModel = glm::scale(tModel, glm::vec3(1.0f, 4.5f, 40.0f));
+    // Top Block: covers Y from 27 to 29.5. Height = 2.5. Center Y = 28.25. (Ducts at Y=28 pierce flawlessly through this thinner wall seal)
+    glm::mat4 tModel = glm::translate(glm::mat4(1.0f), glm::vec3(-100.0f, 28.25f, 0.0f));
+    tModel = glm::scale(tModel, glm::vec3(1.0f, 2.5f, 40.0f));
     shader.setMat4("model", tModel); glDrawArrays(GL_TRIANGLES, 0, 36);
 
-    // Left Block: covers Z from -20 to -4. Width = 16. Center Z = -12. Y=21, Height=8.
-    glm::mat4 lModel = glm::translate(glm::mat4(1.0f), glm::vec3(-100.0f, 21.0f, -12.0f));
-    lModel = glm::scale(lModel, glm::vec3(1.0f, 8.0f, 16.0f));
+    // Left Block: covers Z from -20 to -8. Width = 12. Center Z = -14. Y=19, Height=16.
+    glm::mat4 lModel = glm::translate(glm::mat4(1.0f), glm::vec3(-100.0f, 19.0f, -14.0f));
+    lModel = glm::scale(lModel, glm::vec3(1.0f, 16.0f, 12.0f));
     shader.setMat4("model", lModel); glDrawArrays(GL_TRIANGLES, 0, 36);
 
-    // Right Block: covers Z from 4 to 20. Width = 16. Center Z = 12. Y=21, Height=8.
-    glm::mat4 rModel = glm::translate(glm::mat4(1.0f), glm::vec3(-100.0f, 21.0f, 12.0f));
-    rModel = glm::scale(rModel, glm::vec3(1.0f, 8.0f, 16.0f));
+    // Right Block: covers Z from 8 to 20. Width = 12. Center Z = 14. Y=19, Height=16.
+    glm::mat4 rModel = glm::translate(glm::mat4(1.0f), glm::vec3(-100.0f, 19.0f, 14.0f));
+    rModel = glm::scale(rModel, glm::vec3(1.0f, 16.0f, 12.0f));
     shader.setMat4("model", rModel); glDrawArrays(GL_TRIANGLES, 0, 36);
     
     // Render the Exhaust Fan inside the custom cut
