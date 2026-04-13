@@ -97,11 +97,11 @@ public:
             if (direction == BACKWARD) Position -= Front * velocity;
             if (direction == LEFT) Position -= Right * velocity;
             if (direction == RIGHT) Position += Right * velocity;
+            if (direction == UP) Position += WorldUp * velocity;
+            if (direction == DOWN) Position -= WorldUp * velocity;
         }
 
         if (Mode == ASSIGNMENT) {
-            if (direction == UP) Position += WorldUp * velocity;
-            if (direction == DOWN) Position -= WorldUp * velocity;
             if (direction == PITCH_UP) Pitch += rotationVelocity;
             if (direction == PITCH_DOWN) Pitch -= rotationVelocity;
             if (direction == YAW_LEFT) Yaw -= rotationVelocity;
@@ -151,6 +151,11 @@ public:
 
     void SetTarget(glm::vec3 target) {
         FollowTarget = target;
+    }
+
+    void RotateYaw(float angle) {
+        Yaw += angle;
+        updateCameraVectors();
     }
 
 private:

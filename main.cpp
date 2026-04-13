@@ -68,6 +68,8 @@ bool keyL_pressed = false, keyM_pressed = false, keyG_pressed = false;
 bool key8_pressed = false, key9_pressed = false, keyV_pressed = false;
 bool keyT_pressed = false;
 bool keyP_pressed = false;
+bool keyLeft_pressed = false;
+bool keyRight_pressed = false;
 
 // Animations
 float fanAngle = 0.0f;
@@ -150,7 +152,7 @@ std::vector<GridBox> gridBoxes;
 // Shelf tracking: [Side: 0=Left, 1=Right][Tower][Tier][Slot]
 const int SHELF_TOWERS = 10;
 const int SHELF_TIERS = 5;
-const int SHELF_SLOTS = 8;
+const int SHELF_SLOTS = 9;
 bool shelfOccupied[2][SHELF_TOWERS][SHELF_TIERS][SHELF_SLOTS]; 
 glm::vec3 shelfSlotPos[2][SHELF_TOWERS][SHELF_TIERS][SHELF_SLOTS];
 
@@ -1670,8 +1672,8 @@ int main()
     }
     glfwMakeContextCurrent(window);
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
-    glfwSetCursorPosCallback(window, mouse_callback);
-    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+    // glfwSetCursorPosCallback(window, mouse_callback);
+    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
 
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
     {
@@ -1846,8 +1848,10 @@ int main()
                 for(int slot = 0; slot < SHELF_SLOTS; slot++) {
                     shelfOccupied[side][t][tier][slot] = (side == 0);
                     float xPos = (side == 0) ? -52.0f : 52.0f;
-                    float bx   = (side == 0) ?  2.5f  : -2.5f;
-                    float bz   = -3.5f + slot * 1.0f;
+                    // Adjusted bx slightly inward to avoid protruding over shelf bounds
+                    float bx   = (side == 0) ?  0.8f  : -0.8f;
+                    // Adjusted bz to evenly space 9 boxes across the 9.0 length shelf
+                    float bz   = -4.0f + slot * 1.0f;
                     shelfSlotPos[side][t][tier][slot] =
                         glm::vec3(xPos + bx, tier * 3.0f + 0.6f, zPos + bz);
                 }
@@ -3099,13 +3103,15 @@ void processInput(GLFWwindow* window)
         if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) mainCamera.ProcessKeyboard(BACKWARD, deltaTime);
         if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) mainCamera.ProcessKeyboard(LEFT, deltaTime);
         if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) mainCamera.ProcessKeyboard(RIGHT, deltaTime);
+        
+        // E for UP, X for DOWN
+        if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) mainCamera.ProcessKeyboard(UP, deltaTime);
+        if (glfwGetKey(window, GLFW_KEY_X) == GLFW_PRESS) mainCamera.ProcessKeyboard(DOWN, deltaTime);
     }
 
     // Assignment mode specific controls
     if (mainCamera.Mode == ASSIGNMENT) {
-        if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) mainCamera.ProcessKeyboard(UP, deltaTime);
         if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) mainCamera.ProcessKeyboard(DOWN, deltaTime);
-        if (glfwGetKey(window, GLFW_KEY_X) == GLFW_PRESS) mainCamera.ProcessKeyboard(PITCH_UP, deltaTime);
         if (glfwGetKey(window, GLFW_KEY_Y) == GLFW_PRESS) mainCamera.ProcessKeyboard(YAW_LEFT, deltaTime);
         if (glfwGetKey(window, GLFW_KEY_Z) == GLFW_PRESS) mainCamera.ProcessKeyboard(ROLL_LEFT, deltaTime);
         if (glfwGetKey(window, GLFW_KEY_F) == GLFW_PRESS) mainCamera.ProcessKeyboard(ROTATE_AROUND, deltaTime);
@@ -3133,6 +3139,21 @@ void processInput(GLFWwindow* window)
         conveyorSpeed -= 5.0f * deltaTime;
         if (conveyorSpeed < 0.5f) conveyorSpeed = 0.5f;    // floor: keep boxes crawling, never dead-stopped
     }
+
+    // 90-degree Snap Camera Rotation
+    if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS) {
+        if (!keyLeft_pressed) {
+            mainCamera.RotateYaw(-45.0f);
+            keyLeft_pressed = true;
+        }
+    } else { keyLeft_pressed = false; }
+
+    if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS) {
+        if (!keyRight_pressed) {
+            mainCamera.RotateYaw(45.0f);
+            keyRight_pressed = true;
+        }
+    } else { keyRight_pressed = false; }
 
     // Toggles logic
 #define DO_TOGGLE(KEY, STATE_VAR, PRESSED_VAR) \
