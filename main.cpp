@@ -3067,12 +3067,16 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
     drawCeilingLights(shader, VAO, wallTex, whiteLightTex);
 
     // ── 3. SKY ─────────────────────────────────────────────────────
-    // Inverted cube tracked to the camera position so it is always
+    // Inverted sphere (Skydome) tracked to the camera position so it is always
     // centred on the viewer and never clipped by the far plane.
-    // Scale 1800 → faces at ±900 from camera, well within zFar=1000.
+    // Scale 1800 → radius 900 from camera, well within zFar=1000.
     // Drawn last with depth-write OFF so it fills background pixels only.
+    extern unsigned int sphereVAO;
+    extern int sphereVertexCount;
+    
     glDepthMask(GL_FALSE);
     glFrontFace(GL_CW);   // invert winding so we see the inside faces
+    glBindVertexArray(sphereVAO);
     glBindTexture(GL_TEXTURE_2D, skyTexture);
     shader.setVec3("objectColor", glm::vec3(0.53f, 0.81f, 0.98f));
     shader.setBool("useTextureColorOnly", true);
@@ -3082,7 +3086,7 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
     glm::mat4 skyModel = glm::translate(glm::mat4(1.0f), camPos);  // follow camera
     skyModel = glm::scale(skyModel, glm::vec3(1800.0f, 1800.0f, 1800.0f));
     shader.setMat4("model", skyModel);
-    glDrawArrays(GL_TRIANGLES, 0, 36);
+    glDrawArrays(GL_TRIANGLES, 0, sphereVertexCount);
     
     shader.setBool("isSkybox", false);
     
