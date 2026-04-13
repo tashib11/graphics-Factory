@@ -379,12 +379,13 @@ void drawShelfArm(Shader& shader, glm::vec3 basePos, glm::vec3 effectorPos, unsi
 }
 
 
+// Evaluate uniform B-spline curve at parameter t (0 to 1) given 4 control points
 glm::vec3 evaluateBSpline(float t, const glm::vec3& p0, const glm::vec3& p1, const glm::vec3& p2, const glm::vec3& p3) {
-    float it = 1.0f - t;
     float t2 = t * t;
     float t3 = t2 * t;
     
-    float b0 = (it * it * it) / 6.0f;
+    // Uniform B-spline basis functions
+    float b0 = (1.0f - t) * (1.0f - t) * (1.0f - t) / 6.0f;
     float b1 = (3.0f * t3 - 6.0f * t2 + 4.0f) / 6.0f;
     float b2 = (-3.0f * t3 + 3.0f * t2 + 3.0f * t + 1.0f) / 6.0f;
     float b3 = t3 / 6.0f;
@@ -392,22 +393,18 @@ glm::vec3 evaluateBSpline(float t, const glm::vec3& p0, const glm::vec3& p1, con
     return p0 * b0 + p1 * b1 + p2 * b2 + p3 * b3;
 }
 
+// Evaluate derivative of uniform B-spline curve at parameter t
 glm::vec3 evaluateBSplineDerivative(float t, const glm::vec3& p0, const glm::vec3& p1, const glm::vec3& p2, const glm::vec3& p3) {
     float t2 = t * t;
     
-    float d0 = -0.5f * (1.0f - t) * (1.0f - t);
-    float d1 = 1.5f * t2 - 2.0f * t;
-    float d2 = -1.5f * t2 + t + 0.5f;
-    float d3 = 0.5f * t2;
+    // Derivative of B-spline basis functions
+    float d0 = -(1.0f - t) * (1.0f - t) / 2.0f;
+    float d1 = (9.0f * t2 - 12.0f * t) / 6.0f;
+    float d2 = (-9.0f * t2 + 6.0f * t + 3.0f) / 6.0f;
+    float d3 = t2 / 2.0f;
     
     return p0 * d0 + p1 * d1 + p2 * d2 + p3 * d3;
 }
-
-// ─── Helicoid Slide ─────────────────────────────────────────────────────────
-unsigned int helicoidVAO = 0;
-int helicoidVertexCount = 0;
-unsigned int watchTexture = 0;
-unsigned int fracTexture = 0;
 
 void drawFractalPillar(Shader& shader, glm::mat4 baseModel, int depth, float length, float thickness, float angleDeg, float phaseAngle = 0.0f) {
     if (depth <= 0) return;
@@ -442,80 +439,6 @@ void drawFractalPillar(Shader& shader, glm::mat4 baseModel, int depth, float len
     drawFractalPillar(shader, rightM, depth - 1, rightLen, newThickness, angleDeg * 0.95f, phaseAngle + 1.57f);
 }
 
-void buildHelicoidSlide() {
-    // Helicoid parametric surface:
-    //   P(u,v) = ( u*cos(v),  c*v,  u*sin(v) )
-    // where u in [R_inner, R_outer], v in [0, totalAngle]
-    // The model-matrix will translate this to world pos (70, 0, 70).
-
-    const float R_inner    = 0.8f;   // tight inner radius — hugs the central pillar
-    const float R_outer    = 7.8f;   // wider walkable surface
-    const float H_total    = 21.0f;  // height (Y=0 floor -> Y=21 top) for taller walkable slope
-    const float numTurns   = 4.0f;   // FEWER turns = significantly larger pitch for pedestrian clearance
-    const float totalAngle = numTurns * 2.0f * 3.14159265f;
-    const float c          = H_total / totalAngle; // pitch constant
-
-    const int uSeg = 24;  // radial subdivisions
-    const int vSeg = 120; // angular subdivisions — smooth continuous spiral
-
-    std::vector<float> verts;
-    verts.reserve(uSeg * vSeg * 6 * 8 * 2); // 2 sides for solid look
-
-    // Analytic normal of the helicoid:
-    //   dP/du = (  cos(v),     0,   sin(v) )
-    //   dP/dv = ( -u*sin(v),   c,   u*cos(v) )
-    //   N = dP/du x dP/dv = ( -c*sin(v), -u,  c*cos(v) )  — then normalize
-    auto hPoint = [&](float u, float v) -> glm::vec3 {
-        return glm::vec3(u * cosf(v), c * v, u * sinf(v));
-    };
-    auto hNormal = [&](float u, float v) -> glm::vec3 {
-        glm::vec3 n(-c * sinf(v), -u, c * cosf(v));
-        float len = glm::length(n);
-        return (len > 1e-6f) ? n / len : glm::vec3(0,1,0);
-    };
-
-    auto push = [&](float u, float v, bool flip) {
-        glm::vec3 p = hPoint(u, v);
-        glm::vec3 n = hNormal(u, v);
-        if (flip) n = -n;
-        float tu = (u - R_inner) / (R_outer - R_inner);
-        float tv = v / totalAngle;
-        verts.push_back(p.x); verts.push_back(p.y); verts.push_back(p.z);
-        verts.push_back(n.x); verts.push_back(n.y); verts.push_back(n.z);
-        verts.push_back(tu);  verts.push_back(tv);
-    };
-
-    for (int vi = 0; vi < vSeg; vi++) {
-        float v0 = totalAngle * (float)vi       / vSeg;
-        float v1 = totalAngle * (float)(vi + 1) / vSeg;
-        for (int ui = 0; ui < uSeg; ui++) {
-            float u0 = R_inner + (R_outer - R_inner) * (float)ui       / uSeg;
-            float u1 = R_inner + (R_outer - R_inner) * (float)(ui + 1) / uSeg;
-
-            // Top face (normal pointing up/outward)
-            push(u0, v0, false); push(u1, v0, false); push(u0, v1, false);
-            push(u1, v0, false); push(u1, v1, false); push(u0, v1, false);
-            // Bottom face (flipped — so underside is also solid/shaded)
-            push(u0, v0, true);  push(u0, v1, true);  push(u1, v0, true);
-            push(u1, v0, true);  push(u0, v1, true);  push(u1, v1, true);
-        }
-    }
-
-    glGenVertexArrays(1, &helicoidVAO);
-    unsigned int vbo;
-    glGenBuffers(1, &vbo);
-    glBindVertexArray(helicoidVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    glBufferData(GL_ARRAY_BUFFER, verts.size() * sizeof(float), verts.data(), GL_STATIC_DRAW);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
-    glEnableVertexAttribArray(2);
-    helicoidVertexCount = (int)(verts.size() / 8);
-}
-
 unsigned int ductVAO = 0;
 int ductVertexCount = 0;
 unsigned int ductTexture = 0;
@@ -527,48 +450,39 @@ unsigned int barrelVAO = 0;
 int barrelVertexCount = 0;
 
 void buildDuctworkSystem() {
-    std::vector<float> ductVerts;
-    float tubeRadius = 0.8f; // Thickened so components remain intimately combined/mixed
-    int radialSegments = 16;
-    int segmentsPerCurve = 30;
+std::vector<float> ductVerts;
+float tubeRadius = 0.8f;
+int radialSegments = 16;
+int segmentsPerCurve = 30;
 
-    for (int b = 0; b < 5; b++) {
-        float bz = -40.0f + b * 20.0f;
-        float R = 40.0f;
-        float beltY = (b % 2 == 0) ? 0.8f : 4.5f;
+for (int b = 0; b < 5; b++) {
+    float bz = -40.0f + b * 20.0f;
+    float R = 40.0f;
+    float beltY = (b % 2 == 0) ? 0.8f : 4.5f;
 
-        // The Paint Chambers are exactly halfway through the curve.
-        // Even belts curve towards +Z (sweep = -PI), Mid = bz + R
-        // Odd belts curve towards -Z (sweep = PI), Mid = bz - R
-        float chamberZ = (b % 2 == 0) ? bz + R : bz - R; 
+    float chamberZ = (b % 2 == 0) ? bz + R : bz - R;
+    float pathZ = chamberZ;
         
-        // Maintain consistent distinct spacing to prevent bundled connections
-        float pathZ = chamberZ;
+    std::vector<glm::vec3> cp;
         
-        std::vector<glm::vec3> cp;
-        // Extend sequence at ends via duplicates for B-spline completeness
-        // Start exactly centered on the Paint Chamber. Tunnel top is at beltY + 1.7f.
-        glm::vec3 startP(0.0f, beltY + 1.0f, pathZ);
-        cp.push_back(startP); 
-        cp.push_back(startP); 
-        cp.push_back(startP); 
+    glm::vec3 startP(0.0f, beltY + 1.0f, pathZ);
+    cp.push_back(startP);
+    cp.push_back(startP);
+    cp.push_back(startP);
         
-        // Ascend vertically out of the chamber
-        cp.push_back(glm::vec3(0.0f, 16.0f, pathZ));
-        cp.push_back(glm::vec3(0.0f, 25.0f, pathZ));
+    cp.push_back(glm::vec3(0.0f, 16.0f, pathZ));
+    cp.push_back(glm::vec3(0.0f, 25.0f, pathZ));
         
-        // Bend smoothly towards the back wall without merging
-        cp.push_back(glm::vec3(0.0f, 28.0f, pathZ));
-        cp.push_back(glm::vec3(-20.0f, 28.0f, pathZ)); 
-        cp.push_back(glm::vec3(-40.0f, 28.0f, pathZ)); 
-        cp.push_back(glm::vec3(-70.0f, 28.0f, pathZ));
+    cp.push_back(glm::vec3(0.0f, 28.0f, pathZ));
+    cp.push_back(glm::vec3(-20.0f, 28.0f, pathZ)); 
+    cp.push_back(glm::vec3(-40.0f, 28.0f, pathZ)); 
+    cp.push_back(glm::vec3(-70.0f, 28.0f, pathZ));
         
-        glm::vec3 endP(-100.0f, 28.0f, pathZ);
-        cp.push_back(endP);
-        cp.push_back(endP);
-        cp.push_back(endP);
+    glm::vec3 endP(-100.0f, 28.0f, pathZ);
+    cp.push_back(endP);
+    cp.push_back(endP);
+    cp.push_back(endP);
 
-        // Initialize our Parallel Transport Frame BEFORE the loop to maintain a continuous, twisting-free extrusion
         glm::vec3 currentUp(1.0f, 0.0f, 0.0f); 
 
         for (size_t i = 0; i < cp.size() - 3; i++) {
@@ -587,8 +501,6 @@ void buildDuctworkSystem() {
                 glm::vec3 d1 = evaluateBSplineDerivative(t1, p0, p1, p2, p3);
                 glm::vec3 d2 = evaluateBSplineDerivative(t2, p0, p1, p2, p3);
 
-                // FIX FOR NaN "GAPS/HOLES": Check length BEFORE normalizing!
-                // Endpoints have duplicated CPs causing 0-length derivatives
                 if (glm::length(d1) < 0.0001f) d1 = (p0.y < 20.0f) ? glm::vec3(0, 1, 0) : glm::vec3(-1, 0, 0);
                 if (glm::length(d2) < 0.0001f) d2 = (p3.y < 20.0f) ? glm::vec3(0, 1, 0) : glm::vec3(-1, 0, 0);
 
@@ -604,7 +516,6 @@ void buildDuctworkSystem() {
                 right1 = glm::normalize(right1);
                 glm::vec3 up1 = glm::normalize(glm::cross(right1, tan1));
                 
-                // Propagate frame to evaluate the second ring properly
                 currentUp = up1;
 
                 glm::vec3 right2 = glm::cross(tan2, currentUp);
@@ -615,8 +526,6 @@ void buildDuctworkSystem() {
                 right2 = glm::normalize(right2);
                 glm::vec3 up2 = glm::normalize(glm::cross(right2, tan2));
                 
-                // CRUCIAL BUG FIX: Propagate the frame UP vector for the next sub-segment (s+1) 
-                // so the quad rings perfectly snap together without tearing gaps between iterations!
                 currentUp = up2;
 
                 for (int r = 0; r < radialSegments; r++) {
@@ -636,7 +545,6 @@ void buildDuctworkSystem() {
                     glm::vec3 p21 = c2 + tubeRadius * n21;
                     glm::vec3 p22 = c2 + tubeRadius * n22;
 
-                    // UV mapping
                     float u1 = (float)r / radialSegments * 4.0f;
                     float u2 = (float)(r+1) / radialSegments * 4.0f;
                     float v1 = (float)(i * segmentsPerCurve + s) / 5.0f;
@@ -1756,7 +1664,6 @@ int main()
     glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
     glEnableVertexAttribArray(2);
 
-    buildHelicoidSlide();
     buildCatwalkSystem();
     buildDuctworkSystem();
     buildArch();
@@ -1799,10 +1706,6 @@ int main()
     unsigned int coneTexture = loadTexture(coneTexPath.c_str(), 200, 128, 64);
     ductTexture  = loadTexture(ductTexPath.c_str(),  150, 150, 150);
     fanTexture   = loadTexture(fanTexPath.c_str(),   100, 100, 100);
-    watchTexture = loadTexture(watchTexPath.c_str(), 180, 150, 120);
-    
-    std::string fracTexPath = "frac.jpg";
-    fracTexture = loadTexture(fracTexPath.c_str(), 150, 150, 150);
 
     std::string streetTexPath = getResourcePath("texture", "street.jpg");
     std::string grassTexPath  = getResourcePath("texture", "grass.jpg");
@@ -2638,7 +2541,42 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
         drawPaintChamber(shader, VAO, b, len * 0.5f, tunnelTex, blueTex, wallTex);
     }
 
-    // 4. DRAW ARMS
+    // 4. DRAW FRACTAL PILLARS at multiple positions
+    glBindVertexArray(VAO);
+    glBindTexture(GL_TEXTURE_2D, wallTex);
+    shader.setVec3("objectColor", glm::vec3(0.85f, 0.85f, 0.9f));
+    shader.setFloat("material.shininess", 16.0f);
+    
+    // Strategic pillar positions: (X, Z) coordinates
+    // Avoiding overlap with conveyor belts, shelves, and catwalk
+    // Belt centers are at Z: -40, -20, 0, 20, 40
+    // Shelves are at X: ±52
+    // Catwalk path varies significantly
+    
+    std::vector<glm::vec3> pillarPositions = {
+        // Center gaps between belts — avoid Z=0 (middle duct), use Z=±10 instead
+        glm::vec3(0.0f, 0.0f, 10.0f),      // Center gap (shifted from Z=0)
+        glm::vec3(0.0f, 0.0f, -10.0f),     // Another center gap (shifted from Z=0)
+        
+        // Far corners away from shelves, paths, and ducts
+        glm::vec3(-35.0f, 0.0f, -60.0f),   // Back-left area
+        glm::vec3(35.0f, 0.0f, -60.0f),    // Back-right area
+        glm::vec3(-35.0f, 0.0f, 60.0f),    // Front-left area
+        glm::vec3(35.0f, 0.0f, 60.0f),     // Front-right area
+        
+        // Outer walls areas (far from center operations)
+        glm::vec3(-80.0f, 0.0f, 5.0f),     // Left wall area (offset from Z=0 duct)
+        glm::vec3(80.0f, 0.0f, 0.0f),      // Right wall area (away from ducts)
+    };
+    
+    for (const auto& pos : pillarPositions) {
+        glm::mat4 fractalBase = glm::translate(glm::mat4(1.0f), pos);
+        drawFractalPillar(shader, fractalBase, 3, 21.0f, 1.5f, 32.0f, 0.0f);
+    }
+    
+    shader.setFloat("material.shininess", 32.0f);
+
+    // 5. DRAW ARMS
     for (int i = 0; i < 20; i++) {
         drawShelfArm(shader, shelfArms[i].basePos, shelfArms[i].effectorPos, conveyorTex, wallTex);
     }
@@ -2719,45 +2657,6 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
     // Restore default specular
     shader.setFloat("material.shininess", 32.0f);
     shader.setVec3("material.specular", 0.3f, 0.3f, 0.3f);
-
-    // --- HELICOID SPIRAL SLIDE --- wrapped around a new pillar in the gap between conveyor belts
-    // Re-positioned to X=0.0, Z=20.0, perfectly spaced between Z=0 and Z=40 belts to avoid collisions.
-    // Spiral wraps tightly around this pillar from Y=0 (floor) to Y=21 (upper level).
-    {
-        extern unsigned int helicoidVAO;
-        extern int helicoidVertexCount;
-        extern unsigned int watchTexture;
-
-        // Helicoid and fractal pillar positioned perfectly in the spacious gap
-        glm::vec3 placementPos(0.0f, 0.0f, 20.0f); // Center gap
-        glm::vec3 slidePos = placementPos;         // helicoid origin at floor
-
-        // 1. DRAW NEW PILLAR
-        glBindVertexArray(VAO);
-        glBindTexture(GL_TEXTURE_2D, fracTexture);
-        shader.setVec3("objectColor", glm::vec3(0.85f, 0.85f, 0.9f)); // Slightly brighter to pop out
-        shader.setFloat("material.shininess", 16.0f);
-        
-        // Base of the pillar starts strictly at Y=0 so slide wraps correctly 0->21
-        glm::mat4 baseM = glm::translate(glm::mat4(1.0f), placementPos);
-        // Call with depth=3 to guarantee EXACTLY 2 levels of visible branching (Trunk + 2 splitting levels)
-        drawFractalPillar(shader, baseM, 3, 21.0f, 1.5f, 32.0f, 0.0f);
-
-        // 2. DRAW HELICOID SPIRAL SURFACE around that pillar
-        glBindVertexArray(helicoidVAO);
-        glBindTexture(GL_TEXTURE_2D, watchTexture);
-        shader.setVec3("objectColor",   glm::vec3(0.75f, 0.75f, 0.80f));
-        shader.setVec3("material.specular",  glm::vec3(1.0f,  1.0f,  1.0f));
-        shader.setFloat("material.shininess", 96.0f);
-        glm::mat4 slideModel = glm::translate(glm::mat4(1.0f), slidePos);
-        shader.setMat4("model", slideModel);
-        glDrawArrays(GL_TRIANGLES, 0, helicoidVertexCount);
-
-        // Restore defaults
-        shader.setVec3("material.specular",  glm::vec3(0.3f, 0.3f, 0.3f));
-        shader.setFloat("material.shininess", 32.0f);
-        glBindVertexArray(VAO);
-    }
 
     // --- 7. DYNAMIC B-SPLINE CATWALK ---
     extern unsigned int cwFloorVAO;
