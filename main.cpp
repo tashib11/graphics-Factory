@@ -2592,9 +2592,9 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
             shader.setMat4("model", model);
             glDrawArrays(GL_TRIANGLES, 0, 36);
             
-            // Ceiling
-            glm::mat4 cModel = glm::translate(glm::mat4(1.0f), glm::vec3(x, 30.0f, z));
-            cModel = glm::scale(cModel, glm::vec3(20.0f, 0.1f, 20.0f));
+            // Ceiling — lowered to Y=29.5 to overlap with wall tops (walls at Y=14.5±15=29.5)
+            glm::mat4 cModel = glm::translate(glm::mat4(1.0f), glm::vec3(x, 29.5f, z));
+            cModel = glm::scale(cModel, glm::vec3(20.0f, 0.5f, 20.0f));
             shader.setMat4("model", cModel);
             glDrawArrays(GL_TRIANGLES, 0, 36);
         }
