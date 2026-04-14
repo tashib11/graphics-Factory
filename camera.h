@@ -121,6 +121,8 @@ public:
         }
 
         if (Mode == REALISTIC) {
+            if (direction == PITCH_UP) Pitch += rotationVelocity;
+            if (direction == PITCH_DOWN) Pitch -= rotationVelocity;
             if (direction == ROLL_LEFT) Roll -= rotationVelocity;
             if (direction == ROLL_RIGHT) Roll += rotationVelocity;
         }

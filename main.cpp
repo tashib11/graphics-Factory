@@ -1595,8 +1595,6 @@ int main()
     birdEyeCamera.Mode = BIRD_EYE;
     followCamera.Mode = FOLLOW;
     frontCamera.Mode = ASSIGNMENT;
-    frontCamera.Position = glm::vec3(0.0f, 7.0f, 15.0f);
-    frontCamera.Pitch = -15.0f; // Look slightly down
 
     std::string phongVsPath = getResourcePath("shader", "vertexShaderForPhongShading.vs");
     std::string phongFsPath = getResourcePath("shader", "fragmentShaderForPhongShading.fs");
@@ -3012,11 +3010,19 @@ void processInput(GLFWwindow* window)
         if (glfwGetKey(window, GLFW_KEY_X) == GLFW_PRESS) mainCamera.ProcessKeyboard(DOWN, deltaTime);
     }
 
-    // Assignment mode specific controls
+    // Q key: Pitch camera UP (look up 45°) for all modes with camera control
+    if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) {
+        mainCamera.ProcessKeyboard(PITCH_UP, deltaTime);
+    }
+
+    // Z key: Pitch camera DOWN (look down 45°) for all modes with camera control
+    if (glfwGetKey(window, GLFW_KEY_Z) == GLFW_PRESS) {
+        mainCamera.ProcessKeyboard(PITCH_DOWN, deltaTime);
+    }
+
+    // Assignment mode specific controls (Y for yaw, F for rotation)
     if (mainCamera.Mode == ASSIGNMENT) {
-        if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) mainCamera.ProcessKeyboard(DOWN, deltaTime);
         if (glfwGetKey(window, GLFW_KEY_Y) == GLFW_PRESS) mainCamera.ProcessKeyboard(YAW_LEFT, deltaTime);
-        if (glfwGetKey(window, GLFW_KEY_Z) == GLFW_PRESS) mainCamera.ProcessKeyboard(ROLL_LEFT, deltaTime);
         if (glfwGetKey(window, GLFW_KEY_F) == GLFW_PRESS) mainCamera.ProcessKeyboard(ROTATE_AROUND, deltaTime);
     }
 
