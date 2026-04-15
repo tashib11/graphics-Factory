@@ -30,7 +30,7 @@ const unsigned int SCR_HEIGHT =950;
 Camera mainCamera(glm::vec3(0.0f, 10.0f, 220.0f), glm::vec3(0.0f, 1.0f, 0.0f), -90.0f, -5.0f);
 Camera birdEyeCamera(glm::vec3(0.0f, 20.0f, 0.1f));
 Camera followCamera(glm::vec3(0.0f, 5.0f, 15.0f));
-Camera frontCamera(glm::vec3(0.0f, 2.0f, 10.0f));
+Camera frontCamera(glm::vec3(30.0f, 20.0f, 10.0f));
 
 float lastX = SCR_WIDTH / 2.0f;
 float lastY = SCR_HEIGHT / 2.0f;
@@ -332,7 +332,7 @@ void drawShelfArm(Shader& shader, glm::vec3 basePos, glm::vec3 effectorPos, unsi
     // 1. Fixed tall Mast (from Y=0 up to Y=18)
     glBindTexture(GL_TEXTURE_2D, darkTex);
     glm::mat4 mast = glm::translate(glm::mat4(1.0f), glm::vec3(basePos.x, 9.0f, basePos.z));
-    shader.setMat4("model", glm::scale(mast, glm::vec3(1.0f, 18.0f, 1.0f)));
+    shader.setMat4("model", glm::scale(mast, glm::vec3(1.0f, 18.0f, 1.0f)));//Width, Height, Depth
     glDrawArrays(GL_TRIANGLES, 0, 36);
 
     // 2. Carriage (slides up/down the mast to match effectorPos.y)
@@ -345,7 +345,7 @@ void drawShelfArm(Shader& shader, glm::vec3 basePos, glm::vec3 effectorPos, unsi
 
     // 3. Boom (horizontal beam connecting mast to effector position)
     glm::vec2 boomStart(basePos.x, basePos.z);
-    glm::vec2 boomEnd(effectorPos.x, effectorPos.z);
+    glm::vec2 boomEnd(effectorPos.x, effectorPos.z);//  glm::vec2 boomEnd(effectorPos.x +20.0f, effectorPos.z);  // Move boom end 20 units
     glm::vec2 boomDir = boomEnd - boomStart;
     float boomLen = glm::length(boomDir);
 
@@ -443,6 +443,8 @@ unsigned int ductVAO = 0;
 int ductVertexCount = 0;
 unsigned int ductTexture = 0;
 unsigned int streetTexture = 0;
+unsigned int woodTexture = 0;
+unsigned int comTexture = 0;
 unsigned int grassTexture = 0;
 unsigned int skyTexture = 0;
 unsigned int barrelTexture = 0;
@@ -1325,7 +1327,7 @@ void buildMengerSponge() {
 // Massive Central Wall Exhaust Fan utilizing Ruled Surface aerodynamic blades
 void drawExhaustFan(Shader& shader) {
     // Shifted to Y=19.0f so the 2x scaled blades do not overlap the ducts at Y=28.0f or floor at Y=0.0f
-    glm::vec3 fanCenter(-100.0f, 19.0f, 0.0f);
+    glm::vec3 fanCenter(-100.0f, 19.0f, 0.0f);//location
     
     // Ensure appropriate darkness for heavy industrial metal
     shader.setVec3("objectColor", glm::vec3(0.5f, 0.5f, 0.5f));
@@ -1712,6 +1714,11 @@ int main()
     grassTexture  = loadTexture(grassTexPath.c_str(),  50, 160,  60);
     skyTexture    = loadTexture(skyTexPath.c_str(),   135, 206, 235);
 
+    std::string woodTexPath = getResourcePath("texture", "wood.jpg");
+    std::string comTexPath = getResourcePath("texture", "com.jpg");
+    woodTexture = loadTexture(woodTexPath.c_str(), 139, 69, 19);
+    comTexture = loadTexture(comTexPath.c_str(), 50, 50, 50);
+
     // Define 5 parallel belts — alternating curve direction, R=40, bz from -40 to +40
     for (int b = 0; b < 5; b++) {
         globalPaths[b].clear();
@@ -1748,7 +1755,7 @@ int main()
             for(int tier = 0; tier < SHELF_TIERS; tier++) {
                 for(int slot = 0; slot < SHELF_SLOTS; slot++) {
                     shelfOccupied[side][t][tier][slot] = (side == 0);
-                    float xPos = (side == 0) ? -52.0f : 52.0f;
+                    float xPos = (side == 0) ? -52.0f : 52.0f; // Left/Right shelves
                     // Adjusted bx slightly inward to avoid protruding over shelf bounds
                     float bx   = (side == 0) ?  0.8f  : -0.8f;
                     // Adjusted bz to evenly space 9 boxes across the 9.0 length shelf
@@ -1767,12 +1774,12 @@ int main()
         float zPos  = beltZ + zOff;
 
         // Left Arms (Source) — park just outside belt start X=-46
-        shelfArms[t].basePos    = glm::vec3(-48.0f, 0.0f, zPos);
+        shelfArms[t].basePos    = glm::vec3(-48.0f, 0.0f, zPos);// arm pillar location
         shelfArms[t].baseRotY   = 90.0f;
         shelfArms[t].towerIndex = t;
 
         // Right Arms (Dest) — park just outside belt end X=+46
-        shelfArms[10 + t].basePos    = glm::vec3(48.0f, 0.0f, zPos);
+		shelfArms[10 + t].basePos = glm::vec3(48.0f, 0.0f, zPos);//arm pillar location
         shelfArms[10 + t].baseRotY   = -90.0f;
         shelfArms[10 + t].towerIndex = t;
     }
@@ -2084,6 +2091,115 @@ int main()
 }
 
 
+
+// ==== CONTROL AREA RENDERING ==== //
+
+void drawTable(Shader& shader, unsigned int cubeVAO, glm::vec3 pos, unsigned int tex) {
+    glBindVertexArray(cubeVAO);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    shader.setVec3("objectColor", glm::vec3(0.8f, 0.8f, 0.8f));
+
+    // Table Top (Increased size: 10x5, height 4.0)
+    glm::mat4 topM = glm::translate(glm::mat4(1.0f), pos + glm::vec3(0.0f, 4.0f, 0.0f));
+    topM = glm::scale(topM, glm::vec3(10.0f, 0.4f, 5.0f));
+    shader.setMat4("model", topM);
+    glDrawArrays(GL_TRIANGLES, 0, 36);
+
+    // 4 Legs
+    float lx[2] = { -4.6f, 4.6f };
+    float lz[2] = { -2.1f, 2.1f };
+    for (int i = 0; i < 2; i++) {
+        for (int j = 0; j < 2; j++) {
+            glm::mat4 legM = glm::translate(glm::mat4(1.0f), pos + glm::vec3(lx[i], 2.0f, lz[j]));
+            legM = glm::scale(legM, glm::vec3(0.4f, 4.0f, 0.4f));
+            shader.setMat4("model", legM);
+            glDrawArrays(GL_TRIANGLES, 0, 36);
+        }
+    }
+}
+
+void drawChair(Shader& shader, unsigned int cubeVAO, glm::vec3 pos, unsigned int tex) {
+    glBindVertexArray(cubeVAO);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    shader.setVec3("objectColor", glm::vec3(0.6f, 0.6f, 0.6f));
+
+    // Seat (Increased size)
+    glm::mat4 seatM = glm::translate(glm::mat4(1.0f), pos + glm::vec3(0.0f, 2.2f, 0.0f));
+    seatM = glm::scale(seatM, glm::vec3(3.0f, 0.4f, 3.0f));
+    shader.setMat4("model", seatM);
+    glDrawArrays(GL_TRIANGLES, 0, 36);
+
+    // Backrest (Positioned at +Z to face -Z towards the table)
+    glm::mat4 backM = glm::translate(glm::mat4(1.0f), pos + glm::vec3(0.0f, 4.2f, 1.3f));
+    backM = glm::scale(backM, glm::vec3(3.0f, 4.0f, 0.4f));
+    shader.setMat4("model", backM);
+    glDrawArrays(GL_TRIANGLES, 0, 36);
+
+    // 4 Legs
+    float cx[2] = { -1.3f, 1.3f };
+    float cz[2] = { -1.3f, 1.3f };
+    for (int i = 0; i < 2; i++) {
+        for (int j = 0; j < 2; j++) {
+            glm::mat4 legM = glm::translate(glm::mat4(1.0f), pos + glm::vec3(cx[i], 1.1f, cz[j]));
+            legM = glm::scale(legM, glm::vec3(0.2f, 2.2f, 0.2f));
+            shader.setMat4("model", legM);
+            glDrawArrays(GL_TRIANGLES, 0, 36);
+        }
+    }
+}
+
+void drawComputer(Shader& shader, unsigned int cubeVAO, glm::vec3 pos, unsigned int tex) {
+    glBindVertexArray(cubeVAO);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    shader.setVec3("objectColor", glm::vec3(0.9f, 0.9f, 0.9f));
+
+    // Monitor Base (Moved to -Z side of the center)
+    glm::mat4 baseM = glm::translate(glm::mat4(1.0f), pos + glm::vec3(0.0f, 4.25f, -1.0f));
+    baseM = glm::scale(baseM, glm::vec3(2.0f, 0.1f, 1.0f));
+    shader.setMat4("model", baseM);
+    glDrawArrays(GL_TRIANGLES, 0, 36);
+
+    // Monitor Stand
+    glm::mat4 standM = glm::translate(glm::mat4(1.0f), pos + glm::vec3(0.0f, 4.8f, -1.2f));
+    standM = glm::scale(standM, glm::vec3(0.4f, 1.0f, 0.4f));
+    shader.setMat4("model", standM);
+    glDrawArrays(GL_TRIANGLES, 0, 36);
+
+    // Monitor Screen Body (Back + Edges)
+    glm::mat4 screenM = glm::translate(glm::mat4(1.0f), pos + glm::vec3(0.0f, 5.8f, -1.2f));
+    screenM = glm::scale(screenM, glm::vec3(4.0f, 2.5f, 0.2f));
+    shader.setMat4("model", screenM);
+    glDrawArrays(GL_TRIANGLES, 0, 36);
+    
+    // Front Screen (Solid Black)
+    extern bool textureOn;
+    shader.setBool("textureOn", false);
+    shader.setVec3("objectColor", glm::vec3(0.0f, 0.0f, 0.0f));
+    glm::mat4 screenFront = glm::translate(glm::mat4(1.0f), pos + glm::vec3(0.0f, 5.8f, -1.08f)); // slightly pop out in +Z
+    screenFront = glm::scale(screenFront, glm::vec3(3.8f, 2.3f, 0.05f));
+    shader.setMat4("model", screenFront);
+    glDrawArrays(GL_TRIANGLES, 0, 36);
+    shader.setBool("textureOn", textureOn);
+
+    // Keyboard
+    glBindTexture(GL_TEXTURE_2D, tex);
+    shader.setVec3("objectColor", glm::vec3(0.2f, 0.2f, 0.2f));
+    glm::mat4 kbM = glm::translate(glm::mat4(1.0f), pos + glm::vec3(0.0f, 4.25f, 0.5f));
+    kbM = glm::scale(kbM, glm::vec3(3.0f, 0.1f, 1.0f));
+    shader.setMat4("model", kbM);
+    glDrawArrays(GL_TRIANGLES, 0, 36);
+}
+
+void drawControlArea(Shader& shader, unsigned int cubeVAO) {
+    // Front-left unused corner of the warehouse
+    glm::vec3 areaPos(-80.0f, 0.0f, 80.0f);
+    extern unsigned int woodTexture, comTexture;
+    
+    drawTable(shader, cubeVAO, areaPos, woodTexture);
+    // Position chair on the +Z side, opposite to the PC screen
+    drawChair(shader, cubeVAO, areaPos + glm::vec3(0.0f, 0.0f, 4.0f), woodTexture);
+    drawComputer(shader, cubeVAO, areaPos, comTexture);
+}
 
 void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned int conveyorTex, unsigned int floorTex, unsigned int wallTex, unsigned int blueTex, unsigned int tunnelTex, unsigned int walkTexture, unsigned int whiteLightTex, unsigned int bakaTexture, unsigned int coneTexture, glm::mat4 view, glm::mat4 projection, glm::vec3 camPos) {
     shader.use();
@@ -2575,7 +2691,10 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
     shader.setFloat("material.shininess", 32.0f);
 
     // 5. DRAW ARMS
-    for (int i = 0; i < 20; i++) {
+    for (int i = 0; i < 20; i++) { 
+        //  MODIFIED - Move arm 10 units away  away from pillar
+        //glm::vec3 offsetBasePos = shelfArms[i].basePos + glm::vec3(10.0f, 0.0f, 0.0f);
+       // drawShelfArm(shader, offsetBasePos, shelfArms[i].effectorPos
         drawShelfArm(shader, shelfArms[i].basePos, shelfArms[i].effectorPos, conveyorTex, wallTex);
     }
 
@@ -2962,6 +3081,9 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
     // Call the built-in geometry renderer for the ceiling fixtures 
     // to stick them to the roof and drop realistic cords down to point light coordinates
     drawCeilingLights(shader, VAO, wallTex, whiteLightTex);
+
+    // ── CONTROL AREA ───────────────────────────────────────────────
+    drawControlArea(shader, VAO);
 
     // ── 3. SKY ─────────────────────────────────────────────────────
     // Inverted sphere (Skydome) tracked to the camera position so it is always
