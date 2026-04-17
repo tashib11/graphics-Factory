@@ -442,6 +442,9 @@ void drawFractalPillar(Shader& shader, glm::mat4 baseModel, int depth, float len
 unsigned int ductVAO = 0;
 int ductVertexCount = 0;
 unsigned int ductTexture = 0;
+unsigned int pondVAO = 0;
+int pondVertexCount = 0;
+unsigned int waterTexture = 0;
 unsigned int streetTexture = 0;
 unsigned int woodTexture = 0;
 unsigned int comTexture = 0;
@@ -467,19 +470,22 @@ for (int b = 0; b < 5; b++) {
         
     std::vector<glm::vec3> cp;
         
-    glm::vec3 startP(0.0f, beltY + 1.0f, pathZ);
+    glm::vec3 startP(0.0f, beltY + 1.0f, pathZ);     // VERTICAL PART - Control point 0
     cp.push_back(startP);
     cp.push_back(startP);
     cp.push_back(startP);
         
-    cp.push_back(glm::vec3(0.0f, 16.0f, pathZ));
+    cp.push_back(glm::vec3(0.0f, 16.0f, pathZ)); // ... middle rise points ...
     cp.push_back(glm::vec3(0.0f, 25.0f, pathZ));
         
+
+    // HORIZONTAL PART
     cp.push_back(glm::vec3(0.0f, 28.0f, pathZ));
     cp.push_back(glm::vec3(-20.0f, 28.0f, pathZ)); 
     cp.push_back(glm::vec3(-40.0f, 28.0f, pathZ)); 
     cp.push_back(glm::vec3(-70.0f, 28.0f, pathZ));
         
+    // END POINT - Fan intake
     glm::vec3 endP(-100.0f, 28.0f, pathZ);
     cp.push_back(endP);
     cp.push_back(endP);
@@ -598,12 +604,12 @@ void buildCatwalkSystem() {
         glm::vec3(  10.0f, 16.5f, -15.0f),
         glm::vec3( 45.0f, 16.5f, -15.0f),
         glm::vec3( 65.0f, 16.5f, -15.0f), 
-        glm::vec3( 90.0f, 16.5f,  20.0f), 
+        glm::vec3( 90.0f, 16.5f,  20.0f), // Point 5 - elevation change
         glm::vec3( 65.0f, 16.5f,  55.0f), 
         glm::vec3( 40.0f, 16.5f,  55.0f), 
-        glm::vec3( 10.0f, 11.5f,  55.0f), 
+        glm::vec3( 10.0f, 11.5f,  55.0f), // Point 8 - height drops to 11.5
         glm::vec3(-30.0f,  6.5f,  55.0f),
-        glm::vec3(-70.0f,  0.5f,  55.0f), 
+        glm::vec3(-70.0f,  0.5f,  55.0f), // Point 10 - height drops to 0.5
         glm::vec3(-100.0f, 0.5f,  55.0f)
     };
 
@@ -640,6 +646,8 @@ void buildCatwalkSystem() {
             glm::vec3 up1 = glm::normalize(glm::cross(right1, tan1));
             glm::vec3 up2 = glm::normalize(glm::cross(right2, tan2));
 
+
+            // CREATE FLOOR - Extend left and right from center line
             glm::vec3 flL1 = c1 - right1 * catwalkWidth;
             glm::vec3 flR1 = c1 + right1 * catwalkWidth;
             glm::vec3 flL2 = c2 - right2 * catwalkWidth;
@@ -667,7 +675,8 @@ void buildCatwalkSystem() {
             floorVerts.push_back(flL2.x); floorVerts.push_back(flL2.y); floorVerts.push_back(flL2.z);
             floorVerts.push_back(up2.x); floorVerts.push_back(up2.y); floorVerts.push_back(up2.z);
             floorVerts.push_back(0.0f); floorVerts.push_back(v_coord2);
-
+           
+            // CREATE RAILS - Safety handrails on both sides
             glm::vec3 rBaseL1 = flL1 + up1 * railHeight;
             glm::vec3 rBaseL2 = flL2 + up2 * railHeight;
             glm::vec3 rBaseR1 = flR1 + up1 * railHeight;
@@ -823,26 +832,50 @@ void buildFanBlade() {
     float Sweep = -1.0f; 
     float MaxCamber = 0.4f;
 
+    // Boundary Curve 1 (Root)
+    auto C1 = [&](float u) -> glm::vec3 {
+        float U = u - 0.5f;
+        float camber = MaxCamber * (1.0f - 4.0f * U * U);
+        
+        // Base chord position
+        float bx = U * C_root * sin(A_root);
+        float bz = U * C_root * cos(A_root);
+        
+        // Apply camber perpendicularly to the chord angle to prevent twisting/folding
+        float cx = camber * cos(A_root);
+        float cz = camber * -sin(A_root);
+        
+        return glm::vec3(bx + cx, R_root, bz + cz);
+    };
+
+    // Boundary Curve 2 (Tip)
+    auto C2 = [&](float u) -> glm::vec3 {
+        float U = u - 0.5f;
+        float camber = MaxCamber * (1.0f - 4.0f * U * U) * 0.5f; 
+        
+        // Base chord position
+        float bx = U * C_tip * sin(A_tip);
+        float bz = U * C_tip * cos(A_tip) + Sweep;
+        
+        // Apply camber perpendicularly
+        float cx = camber * cos(A_tip);
+        float cz = camber * -sin(A_tip);
+        
+        return glm::vec3(bx + cx, R_tip, bz + cz);
+    };
+
+    // Ruled Surface Interpolation
     auto getPoint = [&](float t_u, float t_v) -> glm::vec3 {
-        float u = t_u - 0.5f; 
-        float radius = R_root + t_v * (R_tip - R_root);
-        float chord = C_root + t_v * (C_tip - C_root);
-        float angle = A_root + t_v * (A_tip - A_root);
-        float sweep = Sweep * t_v * t_v; 
-        
-        float camber = MaxCamber * (1.0f - 4.0f * u * u) * (1.0f - t_v * 0.5f); 
-        
-        float z = u * chord * cos(angle) + sweep;
-        float x = u * chord * sin(angle) + camber;
-        return glm::vec3(x, radius, z);
+        return (1.0f - t_v) * C1(t_u) + t_v * C2(t_u);
     };
 
     auto getNormal = [&](float t_u, float t_v) -> glm::vec3 {
-        float eps = 0.01f;
-        glm::vec3 pu1 = getPoint(glm::clamp(t_u + eps, 0.0f, 1.0f), t_v);
-        glm::vec3 pu0 = getPoint(glm::clamp(t_u - eps, 0.0f, 1.0f), t_v);
-        glm::vec3 pv1 = getPoint(t_u, glm::clamp(t_v + eps, 0.0f, 1.0f));
-        glm::vec3 pv0 = getPoint(t_u, glm::clamp(t_v - eps, 0.0f, 1.0f));
+        float eps = 0.001f;
+        // Evaluate symmetrically without clamping to prevent boundary normal warping
+        glm::vec3 pu1 = getPoint(t_u + eps, t_v);
+        glm::vec3 pu0 = getPoint(t_u - eps, t_v);
+        glm::vec3 pv1 = getPoint(t_u, t_v + eps);
+        glm::vec3 pv0 = getPoint(t_u, t_v - eps);
         glm::vec3 du = glm::normalize(pu1 - pu0);
         glm::vec3 dv = glm::normalize(pv1 - pv0);
         return glm::normalize(glm::cross(du, dv)); 
@@ -855,6 +888,7 @@ void buildFanBlade() {
         verts.push_back(n.x); verts.push_back(n.y); verts.push_back(n.z);
         verts.push_back(tu); verts.push_back(tv);
     };
+    
     auto pushV_B = [&](float tu, float tv) {
         glm::vec3 p = getPoint(tu, tv);
         glm::vec3 n = -getNormal(tu, tv);
@@ -863,6 +897,7 @@ void buildFanBlade() {
         verts.push_back(tu); verts.push_back(tv);
     };
 
+    // Consistent diagonal tessellation linking adjacent points strictly to avoid twisting
     for (int v = 0; v < vSegments; v++) {
         for (int u = 0; u < uSegments; u++) {
             float u1 = (float)u / uSegments;
@@ -870,20 +905,21 @@ void buildFanBlade() {
             float v1 = (float)v / vSegments;
             float v2 = (float)(v + 1) / vSegments;
 
+            // Front face (CCW Winding: Bottom-Left to Top-Right diagonal cut)
             pushV(u1, v1);
             pushV(u2, v1);
-            pushV(u1, v2);
+            pushV(u2, v2);
 
-            pushV(u2, v1);
+            pushV(u1, v1);
             pushV(u2, v2);
             pushV(u1, v2);
             
-            // Flipped backfaces for solid two-sided culling capabilities
+            // Flipped backfaces (CW Winding for correct OpenGL culling orientation)
             pushV_B(u1, v1);
-            pushV_B(u1, v2);
+            pushV_B(u2, v2);
             pushV_B(u2, v1);
             
-            pushV_B(u2, v1);
+            pushV_B(u1, v1);
             pushV_B(u1, v2);
             pushV_B(u2, v2);
         }
@@ -904,6 +940,115 @@ void buildFanBlade() {
     
     fanBladeVertexCount = verts.size() / 8;
 }
+void buildBezierPond() {
+    std::vector<float> verts;
+    int uSegments = 40;
+    int vSegments = 40;
+    
+    glm::vec3 cp[4][4];
+    for (int i=0; i<4; i++) {
+        for (int j=0; j<4; j++) {
+            float px = (i / 3.0f - 0.5f) * 25.0f; // 25x25 scale internal
+            float pz = (j / 3.0f - 0.5f) * 25.0f; 
+            
+            // Generate a natural basin/ripple shape. Ensure edge points are visibly above grass level (-0.65)
+            float py = -0.64f; 
+            if (i > 0 && i < 3 && j > 0 && j < 3) {
+                // Interior water level pops out safely instead of sinking
+                py = -0.61f + 0.05f * sin(i*3.14f + j*3.14f);
+            }
+            cp[i][j] = glm::vec3(px, py, pz);
+        }
+    }
+
+    auto B = [](int i, float u) -> float {
+        if (i == 0) return (1.0f - u) * (1.0f - u) * (1.0f - u);
+        if (i == 1) return 3.0f * u * (1.0f - u) * (1.0f - u);
+        if (i == 2) return 3.0f * u * u * (1.0f - u);
+        if (i == 3) return u * u * u;
+        return 0.0f;
+    };
+
+    auto getPoint = [&](float u, float v) -> glm::vec3 {
+        glm::vec3 p(0.0f);
+        for(int i=0; i<4; i++) {
+            for(int j=0; j<4; j++) {
+                p += cp[i][j] * B(i, u) * B(j, v);
+            }
+        }
+        return p;
+    };
+
+    auto getNormal = [&](float u, float v) -> glm::vec3 {
+        float eps = 0.01f;
+        glm::vec3 pu1 = getPoint(u + eps, v);
+        glm::vec3 pu0 = getPoint(u - eps, v);
+        glm::vec3 pv1 = getPoint(u, v + eps);
+        glm::vec3 pv0 = getPoint(u, v - eps);
+        glm::vec3 du = glm::normalize(pu1 - pu0);
+        glm::vec3 dv = glm::normalize(pv1 - pv0);
+        return glm::normalize(glm::cross(du, dv)); 
+    };
+
+    auto pushV = [&](float tu, float tv) {
+        glm::vec3 p = getPoint(tu, tv);
+        glm::vec3 n = getNormal(tu, tv);
+        verts.push_back(p.x); verts.push_back(p.y); verts.push_back(p.z);
+        verts.push_back(n.x); verts.push_back(n.y); verts.push_back(n.z);
+        verts.push_back(tu * 5.0f); verts.push_back(tv * 5.0f); // Ensure texture tiling
+    };
+
+    auto pushV_B = [&](float tu, float tv) {
+        glm::vec3 p = getPoint(tu, tv);
+        glm::vec3 n = -getNormal(tu, tv);
+        verts.push_back(p.x); verts.push_back(p.y); verts.push_back(p.z);
+        verts.push_back(n.x); verts.push_back(n.y); verts.push_back(n.z);
+        verts.push_back(tu * 5.0f); verts.push_back(tv * 5.0f); // Ensure texture tiling
+    };
+
+    for (int v = 0; v < vSegments; v++) {
+        for (int u = 0; u < uSegments; u++) {
+            float u1 = (float)u / uSegments;
+            float u2 = (float)(u + 1) / uSegments;
+            float v1 = (float)v / vSegments;
+            float v2 = (float)(v + 1) / vSegments;
+
+            // Front face (Standard XZ Winding)
+            pushV(u1, v1);
+            pushV(u2, v1);
+            pushV(u2, v2);
+
+            pushV(u1, v1);
+            pushV(u2, v2);
+            pushV(u1, v2);
+
+            // Back face (Inverted CW winding)
+            pushV_B(u1, v1);
+            pushV_B(u2, v2);
+            pushV_B(u2, v1);
+
+            pushV_B(u1, v1);
+            pushV_B(u1, v2);
+            pushV_B(u2, v2);
+        }
+    }
+
+    glGenVertexArrays(1, &pondVAO);
+    unsigned int vbo;
+    glGenBuffers(1, &vbo);
+    glBindVertexArray(pondVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, verts.size() * sizeof(float), &verts[0], GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3*sizeof(float)));
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6*sizeof(float)));
+    glEnableVertexAttribArray(2);
+    
+    pondVertexCount = verts.size() / 8;
+}
+
 void buildCylinder() {
     std::vector<float> verts;
     int segments = 36;
@@ -1668,6 +1813,7 @@ int main()
     buildDuctworkSystem();
     buildArch();
     buildFanBlade();
+    buildBezierPond();
     buildCylinder();
     buildSphere();
     buildOval();
@@ -1718,6 +1864,8 @@ int main()
     std::string comTexPath = getResourcePath("texture", "com.jpg");
     woodTexture = loadTexture(woodTexPath.c_str(), 139, 69, 19);
     comTexture = loadTexture(comTexPath.c_str(), 50, 50, 50);
+    std::string waterTexPath = getResourcePath("texture", "water.jpg");
+    waterTexture = loadTexture(waterTexPath.c_str(), 20, 100, 150);
 
     // Define 5 parallel belts — alternating curve direction, R=40, bz from -40 to +40
     for (int b = 0; b < 5; b++) {
@@ -2565,7 +2713,9 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
             getPathPositionAndAngle(gb.pathIndex, gb.distance, pos, angle);
             pos.y += 0.6f;
         } else {
+            // ORIGINAL: uses worldPos (shelf location)
             pos = gb.worldPos;
+            // pos = gb.worldPos + glm::vec3(8.0f, 5.0f, 0.0f);  // Move 8 units out, 5 up
         }
 
         if (gb.stage == PAINTED || gb.stage == BOUND) {
@@ -2651,7 +2801,7 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
         // drawCleaningStation(shader, VAO, b, len * 0.25f, conveyorTex, wallTex);
         // drawCleaningStation(shader, VAO, b, len * 0.75f, conveyorTex, wallTex);
 
-        // CENTRAL PAINT CHAMBER
+        // CENTRAL PAINT CHAMBER to seprate -change b+5
         drawPaintChamber(shader, VAO, b, len * 0.5f, tunnelTex, blueTex, wallTex);
     }
 
@@ -2695,6 +2845,8 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
         //  MODIFIED - Move arm 10 units away  away from pillar
         //glm::vec3 offsetBasePos = shelfArms[i].basePos + glm::vec3(10.0f, 0.0f, 0.0f);
        // drawShelfArm(shader, offsetBasePos, shelfArms[i].effectorPos
+      
+        //to separate shelfArms[i].basePos + glm::vec3(10.0f, 0.0f, 0.0f);
         drawShelfArm(shader, shelfArms[i].basePos, shelfArms[i].effectorPos, conveyorTex, wallTex);
     }
 
@@ -3077,6 +3229,27 @@ void renderScene(Shader& shader, unsigned int VAO, unsigned int boxTex, unsigned
             glDrawArrays(GL_TRIANGLES, 0, 36);
         }
 
+    // ── WATER PONDS ─────────────────────────────────────────────
+    if (pondVAO != 0) {
+        glBindVertexArray(pondVAO);
+        glBindTexture(GL_TEXTURE_2D, waterTexture);
+        shader.setVec3("objectColor", glm::vec3(0.2f, 0.5f, 0.8f));
+        shader.setFloat("material.shininess", 128.0f); // Make water highly reflective
+        
+        // Left Pond
+        glm::mat4 mLeft = glm::translate(glm::mat4(1.0f), glm::vec3(-60.0f, 0.0f, 150.0f));
+        shader.setMat4("model", mLeft);
+        glDrawArrays(GL_TRIANGLES, 0, pondVertexCount);
+
+        // Right Pond
+        glm::mat4 mRight = glm::translate(glm::mat4(1.0f), glm::vec3(60.0f, 0.0f, 150.0f));
+        shader.setMat4("model", mRight);
+        glDrawArrays(GL_TRIANGLES, 0, pondVertexCount);
+        
+        shader.setFloat("material.shininess", 32.0f); // Reset shininess
+        glBindVertexArray(VAO); // RESTORE PREVIOUS VAO BINDING TO PREVENT DRIVER CRASH
+    }
+
     // ── LIGHT FIXTURES ─────────────────────────────────────────────
     // Call the built-in geometry renderer for the ceiling fixtures 
     // to stick them to the roof and drop realistic cords down to point light coordinates
@@ -3185,6 +3358,11 @@ void processInput(GLFWwindow* window)
             keyRight_pressed = true;
         }
     } else { keyRight_pressed = false; }
+    // Press 'W' to toggle wireframe
+    if (glfwGetKey(window, GLFW_KEY_B) == GLFW_PRESS)
+        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+    else
+        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
     // Toggles logic
 #define DO_TOGGLE(KEY, STATE_VAR, PRESSED_VAR) \
@@ -3317,6 +3495,7 @@ unsigned int loadTexture(char const* path, unsigned char r, unsigned char g, uns
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     }
+
 
     return textureID;
 }
